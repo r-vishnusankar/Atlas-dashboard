@@ -1,0 +1,4 @@
+project_id,project_name,owner,client,current_page,page_owner,stage,status,ba,progress,start_date,release_date,priority,cms,tags,notes,developer,qa_engineer,total_pages,completed_pages,page_priority,actual_live_date,detail_gid,detail_csv_url
+PRJ-001,Example Alpha,Neeraj Smith,Client A / homepage,Product listing,Neeraj,Development,on_track,Neeraj,45,15-Jan-2026,20-May-2026,High,Sanity,launch;web,Build checkout next.,Neeraj,Greeshma,10,4,P2,21-Mar-2026,,
+PRJ-002,Example Beta,Ramesh Kumar,Client B,About us,Vishak,QA,at_risk,Ramesh,80,01-Feb-2026,10-Apr-2026,Medium,WordPress,,"Blocked on copy review.",Vishak,Greeshma,6,5,P1,,
+PRJ-003,Example Gamma,Minna Ray,Client C,—,—,Planning,on_track,Minna,5,20-Mar-2026,TBD,Low,BaseHub,,Sprint planning next week.,Vishak,Greeshma,0,0,P2,,

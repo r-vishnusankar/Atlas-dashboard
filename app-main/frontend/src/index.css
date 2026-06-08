@@ -1,0 +1,65 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto",
+    "Helvetica Neue", sans-serif;
+  font-feature-settings: "cv11", "ss01", "ss03";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: #f8f9fa;
+  color: #202124;
+}
+
+code, .mono, .tabular {
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+::selection {
+  background: rgba(26, 115, 232, 0.18);
+  color: #0b3d91;
+}
+
+@layer base {
+  :root {
+    --background: 210 17% 98%;
+    --foreground: 220 9% 14%;
+    --card: 0 0% 100%;
+    --card-foreground: 220 9% 14%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 220 9% 14%;
+    --primary: 214 82% 51%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 210 17% 95%;
+    --secondary-foreground: 220 9% 14%;
+    --muted: 210 17% 95%;
+    --muted-foreground: 220 6% 41%;
+    --accent: 214 94% 94%;
+    --accent-foreground: 214 82% 35%;
+    --destructive: 4 71% 50%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 210 11% 92%;
+    --input: 210 11% 92%;
+    --ring: 214 82% 51%;
+    --chart-1: 214 82% 51%;
+    --chart-2: 137 64% 34%;
+    --chart-3: 40 100% 49%;
+    --chart-4: 4 71% 50%;
+    --chart-5: 276 88% 61%;
+    --radius: 10px;
+  }
+}
+
+@layer base {
+  * { @apply border-border; }
+  body { @apply bg-background text-foreground; }
+}

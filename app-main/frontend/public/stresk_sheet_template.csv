@@ -1,0 +1,33 @@
+project_id,project_name,owner,stage,status,progress,start_date,release_date,priority,client,tags,notes
+PRJ-001,Acme Corp Website,Zoe F.,Development,delayed,9,2026-01-31,2026-04-12,High,Acme Corp,"React, AI, Multi-tenant",
+PRJ-002,Nimbus Health Patient Portal,Elif D.,QA,at_risk,66,2026-03-16,2026-04-27,High,Nimbus Health,B2C,Designs signed off — implementation in progress.
+PRJ-003,Orbital Labs Admin Dashboard,Zoe F.,Development,at_risk,25,2026-03-27,2026-04-30,Medium,Orbital Labs,"AI, GDPR",Third-party API rate limits being reviewed.
+PRJ-004,Ironclad Finance Mobile App,Sarah K.,Planning,delayed,5,2026-01-09,2026-04-19,High,Ironclad Finance,"Mobile, GDPR, SEO",Roll-forward migration plan drafted.
+PRJ-005,Lumina Retail Checkout 2.0,Elif D.,Release,on_track,76,2026-01-19,2026-05-03,High,Lumina Retail,"Onboarding, React, Mobile",Waiting on content from client marketing team.
+PRJ-006,Vertex Analytics Pipeline,Aya M.,Live,on_track,100,2025-12-14,2026-03-25,Low,Vertex Analytics,"API, Mobile",Awaiting stakeholder approval.
+PRJ-007,Polaris Media CMS Migration,Marcus T.,Live,on_track,100,2025-12-11,2026-02-18,Medium,Polaris Media,"Internal, Migration, React",
+PRJ-008,Glider Logistics Tracker,Sarah K.,Development,on_track,56,2026-04-28,2026-06-05,Medium,Glider Logistics,"Internal, B2B, SEO",
+PRJ-009,Aster Robotics Control Panel,Ravi S.,Development,on_track,40,2026-03-31,2026-06-23,High,Aster Robotics,"Realtime, Migration, API",Designs signed off — implementation in progress.
+PRJ-010,Brightwave Edu LMS,Diego N.,QA,on_track,77,2026-03-16,2026-05-08,Medium,Brightwave Edu,Analytics,
+PRJ-011,Cascade Energy Billing Rewrite,Marcus T.,Release,at_risk,77,2026-03-17,2026-07-02,Medium,Cascade Energy,"Multi-tenant, Dashboard, Onboarding",Smoke tests passing on staging.
+PRJ-012,Delphi Legal Contract AI,Nora W.,Development,at_risk,24,2026-03-02,2026-06-25,High,Delphi Legal,"SEO, B2C, Migration",Smoke tests passing on staging.
+PRJ-013,Helios Solar Monitor,Aya M.,Live,at_risk,100,2026-03-03,2026-04-10,Medium,Helios Solar,"AI, React",Localization pending for 3 markets.
+PRJ-014,Kestrel HR Onboarding,Maya P.,QA,delayed,44,2026-05-09,2026-08-04,Low,Kestrel HR,"Migration, E-commerce",Load testing in progress.
+PRJ-015,Lotus Hospitality Booking,Aya M.,QA,on_track,61,2026-03-02,2026-04-08,Medium,Lotus Hospitality,GDPR,Client requested scope additions.
+PRJ-016,Meridian Bank Open API,Nora W.,Release,at_risk,87,2026-01-02,2026-03-30,High,Meridian Bank,"API, Multi-tenant",
+PRJ-017,Northwind Inventory Sync,Zoe F.,QA,delayed,63,2026-02-27,2026-06-24,Medium,Northwind Co.,API,Third-party API rate limits being reviewed.
+PRJ-018,Onyx Insurance Claims Portal,Ravi S.,Development,on_track,20,2026-03-10,2026-05-08,Low,Onyx Insurance,"Dashboard, Payments, API",Waiting on content from client marketing team.
+PRJ-019,Quartz Gaming Leaderboards,Liam O.,Development,at_risk,56,2026-04-07,2026-07-24,Medium,Quartz Gaming,B2C,Awaiting stakeholder approval.
+PRJ-020,Rivet Manufacturing IoT,Zoe F.,Planning,at_risk,14,2026-05-12,2026-07-31,Medium,Rivet Mfg.,B2B,Roll-forward migration plan drafted.
+PRJ-021,Stellar Telecom Self-Service,Priya R.,Release,on_track,89,2026-03-02,2026-04-27,High,Stellar Telecom,SEO,Awaiting stakeholder approval.
+PRJ-022,Tidepool Fitness App,Marcus T.,Planning,on_track,19,2026-01-20,2026-03-10,Low,Tidepool Inc.,"E-commerce, AI",Designs signed off — implementation in progress.
+PRJ-023,Umbra Security Audit Tool,Elif D.,Live,at_risk,100,2026-02-07,2026-04-10,Low,Umbra Security,"B2B, Mobile",Third-party API rate limits being reviewed.
+PRJ-024,Vanta Compliance Sync,Priya R.,Release,at_risk,77,2026-05-02,2026-07-10,Medium,Vanta,SEO,Localization pending for 3 markets.
+PRJ-025,Willow Gardens Store,Nora W.,QA,at_risk,61,2026-03-19,2026-04-20,Low,Willow Gardens,"API, E-commerce",
+PRJ-026,Xenon Travel Itineraries,Liam O.,QA,delayed,51,2026-01-29,2026-04-02,Low,Xenon Travel,Migration,Designs signed off — implementation in progress.
+PRJ-027,Yonder Social Feed,Elif D.,Live,delayed,100,2025-12-20,2026-04-10,Medium,Yonder,GDPR,Client requested scope additions.
+PRJ-028,Zephyr Auto Service Hub,Sarah K.,Development,on_track,21,2026-05-06,2026-07-20,Medium,Zephyr Auto,"B2B, Payments",Designs signed off — implementation in progress.
+PRJ-029,Cobalt Studio Portfolio,Marcus T.,Live,at_risk,100,2026-01-26,2026-04-10,Low,Cobalt Studio,Mobile,Designs signed off — implementation in progress.
+PRJ-030,Ember Podcast Platform,Elif D.,Release,on_track,94,2026-03-05,2026-06-04,High,Ember Media,B2B,Roll-forward migration plan drafted.
+PRJ-031,Fable Reader App,Zoe F.,QA,delayed,64,2026-02-14,2026-03-31,Low,Fable,"Internal, B2B, Realtime",Security review scheduled for next week.
+PRJ-032,Gemstone Marketplace,Zoe F.,Release,delayed,69,2026-03-15,2026-06-03,High,Gemstone,"AI, Dashboard, B2C",Security review scheduled for next week.

@@ -1,0 +1,10 @@
+project_id,project_name,owner,Current Page,Page owner,stage,BA,progress,start_date,release_date,priority,CMS,notes,status,Developer,QA,Total Pages,Completed Pages,Actual Live Date
+PRJ-001,Valoriz,Rameshwari,,Neeraj,Live,Rameshwari,100,01-01-2026,20-Mar-2026,High,Sanity,,status,Neeraj,Greeshma,8,8,20-Mar-2026
+PRJ-002,Oscar,Rameshwari,,Vishak,Live -CR,Rameshwari,65,13-04-2026,24-Apr-2026,High,Wordpress,Development in progress,status,Vishak,Greeshma,7,6,21-Mar-2026
+PRJ-003,Asco,Rameshwari,,"Minna, Ram","Streak -Dev, Live",Rameshwari,80,05-01-2026,24-Apr-2026,High,Basehub,Development in progress,status,"Minna, Ram",Greeshma,27,24,22-Mar-2026
+PRJ-004,Soukya,Rameshwari,,Neeraj,Streak -Dev,Rameshwari,80,16-03-2026,25-May-2026,High,Sanity,Homepage + Streak dev in progress,status,Neeraj,Greeshma,5,0,24-Mar-2026
+PRJ-005,Streak.js,Rameshwari,,Vishak,Streak -Dev,Rameshwari,20,30-03-2026,TBD,High,Sanity,Development in progress,status,Vishak,Greeshma,5,0,26-Mar-2026
+PRJ-006,Ouj Media,Rameshwari,,"Shamseer, Neeraj","Live, Hyper-Care",Rameshwari,100,10-04-2026,8-May-2026,High,Sanity,"Conversion done, domain setup ongoing",status,"Shamseer, Neeraj",Jeffin,8,2,22-Apr-2026
+PRJ-007,Vibe Edu,Rameshwari,,Vishnu Prasad,Planning,Rameshwari,0,22-04-2026,TBD,High,CMS,Estimation in progress,status,Vishnu Prasad,Vishnu Sankar,0,0,28-Mar-2026
+PRJ-008,Hot Pack,Rameshwari,,None,Planning,Rameshwari,0,22-04-2026,TBD,High,Sanity,Yet to decide,status,Shamseer,Tinoy,0,0,29-Mar-2026
+PRJ-009,Aura Real Estate,Rameshwari,,None,Planning,Rameshwari,0,TBD,TBD,Low,No Cms,Yet to decide,status,Vishnu Prasad,Vishnu Sankar,0,0,TBD
