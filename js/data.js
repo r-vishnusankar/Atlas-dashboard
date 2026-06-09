@@ -460,32 +460,79 @@ function clickUpStageFromStatus(statusStr, isDone) {
     return normalizeStage(statusStr || 'Planning');
 }
 
+function clickUpMaxTasks() {
+    const n = parseInt(CONFIG.CLICKUP_MAX_TASKS, 10);
+    return Number.isFinite(n) && n > 0 ? n : 200;
+}
+
+function clickUpPageSize() {
+    const n = parseInt(CONFIG.CLICKUP_PAGE_SIZE, 10);
+    return Number.isFinite(n) && n > 0 ? Math.min(n, 100) : 100;
+}
+
+function clickUpAuthHeaders(token) {
+    return { Authorization: String(token || '').trim() };
+}
+
+/**
+ * ClickUp returns max 100 tasks per page. Paginate until last_page or CLICKUP_MAX_TASKS.
+ */
+async function clickUpFetchTaskPages(urlBuilder, token, label) {
+    const maxTasks = clickUpMaxTasks();
+    const pageSize = clickUpPageSize();
+    const seen = new Set();
+    const all = [];
+    let page = 0;
+    let lastPage = false;
+
+    while (!lastPage && all.length < maxTasks) {
+        const url = urlBuilder(page);
+        const res = await fetch(url, { headers: clickUpAuthHeaders(token), cache: 'no-store' });
+        if (!res.ok) {
+            return { ok: false, status: res.status, tasks: all };
+        }
+        const data = await res.json();
+        const batch = Array.isArray(data?.tasks) ? data.tasks : [];
+        batch.forEach(task => {
+            const id = task?.id;
+            if (id != null && seen.has(id)) return;
+            if (id != null) seen.add(id);
+            if (all.length < maxTasks) all.push(task);
+        });
+        lastPage = data?.last_page === true || batch.length < pageSize;
+        if (!batch.length) break;
+        page += 1;
+    }
+
+    if (all.length >= maxTasks && !lastPage) {
+        console.log(`[Atlas] ClickUp ${label}: capped at ${maxTasks} tasks (raise CLICKUP_MAX_TASKS in config.js for more).`);
+    }
+    return { ok: true, tasks: all, pages: page + 1 };
+}
+
 async function loadClickUpTasks(listId, token) {
     if (!listId || listId === 'clickup_mock' || !token) {
         console.log('[Atlas] Utilizing ClickUp mock data fallback.');
         return getClickUpMockData();
     }
+    const auth = token.trim();
+    const baseQs = 'subtasks=true&include_closed=true';
     try {
-        // Try fetching as List first
-        const listResponse = await fetch(`https://api.clickup.com/api/v2/list/${listId}/task?subtasks=true&include_closed=true`, {
-            headers: {
-                'Authorization': token.trim()
-            }
-        });
-        if (listResponse.ok) {
-            const data = await listResponse.json();
-            if (data && Array.isArray(data.tasks)) {
-                return data.tasks;
-            }
+        const listResult = await clickUpFetchTaskPages(
+            (page) => `https://api.clickup.com/api/v2/list/${listId}/task?${baseQs}&page=${page}`,
+            auth,
+            `list ${listId}`
+        );
+        if (listResult.ok && listResult.tasks.length) {
+            console.log(`[Atlas] ClickUp list: ${listResult.tasks.length} tasks (${listResult.pages} page(s))`);
+            return listResult.tasks;
         }
 
-        // If List fetch fails, attempt to fetch as Space
-        console.log(`[Atlas] ClickUp list fetch failed. Attempting Space fetch for ID: ${listId}...`);
-        
-        const teamResponse = await fetch(`https://api.clickup.com/api/v2/team`, {
-            headers: {
-                'Authorization': token.trim()
-            }
+        console.log(`[Atlas] ClickUp list fetch empty or failed (${listResult.status || 'n/a'}). Attempting Space fetch for ID: ${listId}...`);
+
+        const teamResponse = await fetch('https://api.clickup.com/api/v2/team', {
+            headers: clickUpAuthHeaders(auth),
+            cache: 'no-store',
         });
         if (!teamResponse.ok) {
             throw new Error(`Failed to fetch authorized ClickUp teams: HTTP ${teamResponse.status}`);
@@ -495,18 +542,15 @@ async function loadClickUpTasks(listId, token) {
             throw new Error('No authorized teams found for ClickUp token.');
         }
         const teamId = teamData.teams[0].id;
-        
-        const spaceResponse = await fetch(`https://api.clickup.com/api/v2/team/${teamId}/task?space_ids[]=${listId}&subtasks=true&include_closed=true`, {
-            headers: {
-                'Authorization': token.trim()
-            }
-        });
-        if (!spaceResponse.ok) {
-            throw new Error(`ClickUp Space API returned HTTP ${spaceResponse.status}`);
-        }
-        const spaceData = await spaceResponse.json();
-        if (spaceData && Array.isArray(spaceData.tasks)) {
-            return spaceData.tasks;
+
+        const spaceResult = await clickUpFetchTaskPages(
+            (page) => `https://api.clickup.com/api/v2/team/${teamId}/task?space_ids[]=${listId}&${baseQs}&page=${page}`,
+            auth,
+            `space ${listId}`
+        );
+        if (spaceResult.ok && spaceResult.tasks.length) {
+            console.log(`[Atlas] ClickUp space: ${spaceResult.tasks.length} tasks (${spaceResult.pages} page(s))`);
+            return spaceResult.tasks;
         }
         return getClickUpMockData();
     } catch (e) {

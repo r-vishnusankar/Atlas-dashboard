@@ -164,6 +164,10 @@ const CONFIG = {
     /** Predictive "likely miss" alert: flag when projected slip (diffDays) exceeds this (0 = any slip). */
     PREDICTIVE_ALERT_MIN_SLACK_DAYS: 0,
 
+    /** ClickUp API: max tasks to load (API returns 100/page; we paginate until this cap or last_page). */
+    CLICKUP_MAX_TASKS: 200,
+    CLICKUP_PAGE_SIZE: 100,
+
     /**
      * Revertable feature flags — set any to `false` to restore prior behavior.
      * See FEATURE_FLAGS.md for what each flag controls.
