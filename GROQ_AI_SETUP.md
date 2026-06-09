@@ -63,6 +63,16 @@ netlify env:set GROQ_MODEL "llama-3.3-70b-versatile"
 
 ### 3. Verify on live site
 
+**Direct health URL** (should be JSON, not the dashboard HTML):
+
+`https://YOUR-SITE.netlify.app/api/ai/health`
+
+```json
+{ "ok": true, "enabled": true, "model": "llama-3.3-70b-versatile" }
+```
+
+If you see the **sidebar / Overview page** instead, redirects are wrong — ensure `_redirects` and `netlify.toml` include `/api/ai/*` **before** `/* → /index.html`, then redeploy.
+
 Open DevTools → Network:
 
 1. Load Overview or Analytics with `AI_INSIGHTS: true`
