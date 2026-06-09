@@ -130,6 +130,8 @@ All hardening toggles live in `js/config.js` → `CONFIG.FEATURE_FLAGS`. See [FE
 | `CLICKUP_LIST_AS_CLIENT` | ClickUp list name (sidebar project, e.g. Valoriz) → `client`; custom **Client** field overrides when set. |
 | `CLICKUP_DONE_STATUS` | Status **COMPLETE** / `status.type === closed` / `date_closed` → `stage: Live`, `clickupComplete`, skipped in `computeAlerts`; go-live from `date_closed` or due date. |
 
+**ClickUp volume:** `CONFIG.CLICKUP_MAX_TASKS` (default **200**) — paginates 100 tasks/page until cap or `last_page`. Raise in `js/config.js` if you need more.
+
 ### Enriched alert rows (`computeAlerts`)
 
 Copied onto alert list items:

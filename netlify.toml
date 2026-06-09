@@ -1,5 +1,17 @@
 [build]
   publish = "."
+  functions = "netlify/functions"
+
+# AI proxy — must come BEFORE the SPA catch-all
+[[redirects]]
+  from = "/api/ai/health"
+  to = "/.netlify/functions/ai-health"
+  status = 200
+
+[[redirects]]
+  from = "/api/ai/insights"
+  to = "/.netlify/functions/ai-insights"
+  status = 200
 
 [[headers]]
   for = "/*"

@@ -33,7 +33,47 @@ Deterministic KPIs, alerts, and Predictive Completion still work when AI or Inte
 
 Responses are cached in `sessionStorage` for 15 minutes per workspace snapshot.
 
+## Netlify (production)
+
+The static site on Netlify uses **serverless functions** in `netlify/functions/` so the same `/api/ai/*` paths work without `serve.py`.
+
+### 1. Add env vars on Netlify
+
+1. [Netlify](https://app.netlify.com) → your site → **Site configuration** → **Environment variables**
+2. Add:
+   - **`GROQ_API_KEY`** — your Groq key (same value as local `.env`)
+   - **`GROQ_MODEL`** (optional) — e.g. `llama-3.3-70b-versatile`
+3. **Deploys** → **Trigger deploy** → **Deploy site** (new deploy required after adding secrets)
+
+CLI alternative:
+
+```bash
+netlify env:set GROQ_API_KEY "gsk_your_key_here"
+netlify env:set GROQ_MODEL "llama-3.3-70b-versatile"
+```
+
+### 2. How it works
+
+| Path | Function |
+|------|----------|
+| `GET /api/ai/health` | `netlify/functions/ai-health.js` |
+| `POST /api/ai/insights` | `netlify/functions/ai-insights.js` |
+
+`netlify.toml` rewrites those URLs to `/.netlify/functions/…` (before the SPA `index.html` catch-all).
+
+### 3. Verify on live site
+
+Open DevTools → Network:
+
+1. Load Overview or Analytics with `AI_INSIGHTS: true`
+2. You should see `GET /api/ai/health` → `{ "ok": true, "enabled": true, … }`
+3. AI cards should call `POST /api/ai/insights` and return narrative text
+
+If `enabled: false`, the key is missing or the site was not redeployed after setting env vars.
+
+**Local dev** still uses `python serve.py` + `.env` — Netlify functions run only on Netlify (or `netlify dev`).
+
 ## Security
 
-- API key stays in server `.env` only (listed in `.gitignore`)
+- API key stays in server `.env` (local) or **Netlify env vars** (production) — never in frontend JS
 - Browser calls same-origin `POST /api/ai/insights` only
