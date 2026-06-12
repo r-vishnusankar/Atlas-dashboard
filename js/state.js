@@ -65,10 +65,10 @@ const AppState = {
         // Filters
         if (this.filters.stage)     projects = projects.filter(p => projectFunnelStage(p) === this.filters.stage);
         if (this.filters.status)    projects = projects.filter(p => p.status === this.filters.status);
-        if (this.filters.owner)     projects = projects.filter(p => p.owner === this.filters.owner);
+        if (this.filters.owner)     projects = projects.filter(p => splitAssigneeNames(p.owner).includes(this.filters.owner));
         if (this.filters.priority)  projects = projects.filter(p => p.priority === this.filters.priority);
-        if (this.filters.developer) projects = projects.filter(p => p.developer === this.filters.developer);
-        if (this.filters.qa)        projects = projects.filter(p => p.qa_engineer === this.filters.qa);
+        if (this.filters.developer) projects = projects.filter(p => splitAssigneeNames(p.developer).includes(this.filters.developer));
+        if (this.filters.qa)        projects = projects.filter(p => splitAssigneeNames(p.qa_engineer).includes(this.filters.qa));
         if (this.filters.client)    projects = projects.filter(p => p.client === this.filters.client);
 
         // Sort
@@ -100,10 +100,10 @@ const AppState = {
         return counts;
     },
 
-    // Unique owners for filter
-    get uniqueOwners()  { return [...new Set(this.allProjects.map(p => p.owner).filter(Boolean))].sort(); },
-    get uniqueDevs()    { return [...new Set(this.allProjects.map(p => p.developer).filter(Boolean))].sort(); },
-    get uniqueQAs()     { return [...new Set(this.allProjects.map(p => p.qa_engineer).filter(Boolean))].sort(); },
+    // Unique owners for filter (split multi-name cells into individual names)
+    get uniqueOwners()  { return [...new Set(this.allProjects.flatMap(p => splitAssigneeNames(p.owner)).filter(s => isValidResourceName(s)))].sort(); },
+    get uniqueDevs()    { return [...new Set(this.allProjects.flatMap(p => splitAssigneeNames(p.developer)).filter(s => isValidResourceName(s)))].sort(); },
+    get uniqueQAs()     { return [...new Set(this.allProjects.flatMap(p => splitAssigneeNames(p.qa_engineer)).filter(s => isValidResourceName(s)))].sort(); },
     get uniqueClients() { return [...new Set(this.allProjects.map(p => p.client).filter(Boolean))].sort(); },
 
     // ── Analytics ──────────────────────────────

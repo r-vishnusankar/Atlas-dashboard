@@ -1796,7 +1796,7 @@ function renderResources() {
     const unassigned = AppState.allProjects.filter(p => {
         const ns = normalizeStage(p.stage || '');
         return ['Backlog','Planning'].includes(ns) &&
-               (p.developer === 'Unassigned' || !p.developer || p.developer === '—' || p.developer === '');
+               splitAssigneeNames(p.developer).every(n => !isValidResourceName(n));
     });
 
     let suggestHTML = '';
@@ -2546,10 +2546,11 @@ function renderAnalytics() {
     // Developer velocity: avg progress across active projects
     const devMap = {};
     projects.filter(p => normalizeStage(p.stage||'') !== 'Live').forEach(p => {
-        const dev = (p.developer || 'Unassigned').trim();
-        if (!devMap[dev]) devMap[dev] = { name: dev, total: 0, count: 0 };
-        devMap[dev].total += projectDisplayProgress(p) || 0;
-        devMap[dev].count++;
+        splitAssigneeNames(p.developer).filter(n => isValidResourceName(n)).forEach(dev => {
+            if (!devMap[dev]) devMap[dev] = { name: dev, total: 0, count: 0 };
+            devMap[dev].total += projectDisplayProgress(p) || 0;
+            devMap[dev].count++;
+        });
     });
     const devList = Object.values(devMap)
         .filter(d => d.count > 0 && d.name && d.name !== 'Unassigned' && d.name !== '—' && d.name.trim() !== '')

@@ -199,6 +199,8 @@ const CONFIG = {
         CLICKUP_LIST_AS_CLIENT: true,
         /** ClickUp: COMPLETE/closed → Live, skip overdue alerts; infer go-live from date_closed. */
         CLICKUP_DONE_STATUS: true,
+        /** Resource map from sibling tab rows (per-page Developer/QA/Page owner); master row fallback. */
+        SIBLING_RESOURCE_MAP: true,
     },
 
     /** Per-project attention score weights (0–100 cap). */

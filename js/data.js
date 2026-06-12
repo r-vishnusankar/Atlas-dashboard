@@ -90,9 +90,32 @@ function col(cols, fieldMap, leg, key) {
 /* ──────────────────────────────────────────
    CSV PARSER
 ────────────────────────────────────────── */
+
+/** Split CSV text into logical lines, respecting quoted fields that span newlines (Alt+Enter in Sheets). */
+function splitCSVLines(text) {
+    const lines = [];
+    let current = '';
+    let inQuotes = false;
+    for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+        if (ch === '"') {
+            inQuotes = !inQuotes;
+            current += ch;
+        } else if ((ch === '\n' || ch === '\r') && !inQuotes) {
+            if (ch === '\r' && text[i + 1] === '\n') i++;
+            if (current.trim()) lines.push(current);
+            current = '';
+        } else {
+            current += ch;
+        }
+    }
+    if (current.trim()) lines.push(current);
+    return lines;
+}
+
 function parseCSV(csvText) {
     const text = String(csvText).replace(/^\uFEFF/, '').trim();
-    const lines = text.split(/\n/).filter(ln => String(ln).trim() !== '');
+    const lines = splitCSVLines(text);
     if (lines.length < 2) return [];
 
     const fieldMap0 = buildFieldIndexMap(lines[0]);
@@ -212,6 +235,11 @@ function normalizeStage(s) {
     if (seg.includes('live')) return 'Live';
     if (seg.includes('backlog')) return 'Backlog';
     return 'Backlog';
+}
+
+/** Split a multi-name assignee field into individual trimmed names. */
+function splitAssigneeNames(raw) {
+    return String(raw || '').split(/[,;\n]+/).map(s => s.trim()).filter(Boolean);
 }
 
 /** Names that must not appear in the resource / availability map */
@@ -840,7 +868,7 @@ function buildDetailSheetCsvUrl(gid, sheetBaseUrl) {
 function parseGenericTableCSV(csvText) {
     const text = String(csvText).replace(/^\uFEFF/, '').trim();
     if (!text) return { headers: [], rows: [] };
-    const lines = text.split('\n').filter(ln => String(ln).trim() !== '');
+    const lines = splitCSVLines(text);
     if (lines.length === 0) return { headers: [], rows: [] };
     const headers = parseCSVLine(lines[0]);
     const rows = [];
@@ -951,6 +979,50 @@ function computeRoadmapMetrics(p, hlist, rows) {
     return { ti, idxStage, idxStatus, idxProgress, idxOwner, total, live, inprog, pending, avgPct, funnelStage };
 }
 
+/**
+ * Per-page people assignments from sibling tab rows (Developer / QA / Page owner columns).
+ * Each entry: { person, role, page, stage, status, start, end, completed } — dates as raw strings.
+ */
+function computeSiblingAssignments(hlist, rows) {
+    const ti = hlist.length ? findSiblingTitleColumnIndex(hlist) : 0;
+    const idxStage   = findSiblingCol(hlist, ['stage', 'phase']);
+    const idxStatus  = findSiblingCol(hlist, ['status', 'health']);
+    const idxStart   = findSiblingCol(hlist, ['start_date', 'project_start_date']);
+    const idxRelease = findSiblingCol(hlist, ['release_date', 'planned_release_date', 'release', 'target_date']);
+    const idxLive    = findSiblingCol(hlist, ['actual_live_date', 'live_date', 'go_live', 'live']);
+    const roleCols = [
+        { role: 'Developer',  idx: findSiblingCol(hlist, ['developer', 'dev']) },
+        { role: 'QA',         idx: findSiblingCol(hlist, ['qa', 'qa_engineer', 'q_a']) },
+        { role: 'Page owner', idx: findSiblingCol(hlist, ['page_owner']) },
+    ].filter(rc => rc.idx >= 0);
+    if (!roleCols.length) return [];
+
+    const out = [];
+    rows.forEach(row => {
+        if (!row.some(cell => cell && String(cell).trim())) return;
+        const rawStage = idxStage >= 0 ? roadmapCell(row, idxStage) : '';
+        const stage = normalizeStage(rawStage);
+        const low = rawStage.toLowerCase();
+        const rowDone = stage === 'Live' || low.includes('live') || low.includes('done') || low.includes('completed');
+        const base = {
+            page:   roadmapCell(row, ti),
+            stage,
+            status: idxStatus >= 0 ? roadmapCell(row, idxStatus) : '',
+            start:  idxStart >= 0 ? roadmapCell(row, idxStart) : '',
+            end:    rowDone
+                ? (roadmapCell(row, idxLive) || roadmapCell(row, idxRelease))
+                : roadmapCell(row, idxRelease),
+            completed: rowDone,
+        };
+        roleCols.forEach(rc => {
+            const v = roadmapCell(row, rc.idx);
+            if (!isValidResourceName(v)) return;
+            out.push({ person: v, role: rc.role, ...base });
+        });
+    });
+    return out;
+}
+
 /** Most common normalized stage across sibling rows (e.g. Streak_QA → QA for funnel). */
 function computeDominantFunnelStage(hlist, rows) {
     const idxStage = findSiblingCol(hlist, ['stage', 'phase']);
@@ -1017,7 +1089,8 @@ async function enrichProjectsWithSiblingMetrics(projects, sheetBaseUrl) {
                 const sib = await loadProjectSiblingData(p, base);
                 if (sib.source === 'ok' && sib.table?.headers?.length && sib.table.rows?.length) {
                     const rm = computeRoadmapMetrics(p, sib.table.headers, sib.table.rows);
-                    list[idx].roadmap = { hasSibling: true, source: 'sibling', ...rm };
+                    const assignments = computeSiblingAssignments(sib.table.headers, sib.table.rows);
+                    list[idx].roadmap = { hasSibling: true, source: 'sibling', ...rm, assignments };
                 } else if (sib.hasSibling && sib.source === 'error') {
                     list[idx].roadmap = { hasSibling: false, source: 'error' };
                 }
@@ -1394,12 +1467,17 @@ function projectAssignmentEnd(project) {
 function buildResourceMap(projects) {
     const map = {};
 
-    function push(name, role, project) {
+    function ensurePerson(n) {
+        if (!map[n]) map[n] = { name: n, assignments: [], activeCount: 0, conflicts: [], freeFrom: null };
+        return map[n];
+    }
+
+    function push(name, role, project, excludeSet) {
         if (!isValidResourceName(name)) return;
-        name.split(',').forEach(rawName => {
-            const n = rawName.trim();
+        splitAssigneeNames(name).forEach(n => {
             if (!isValidResourceName(n)) return;
-            if (!map[n]) map[n] = { name: n, assignments: [], activeCount: 0, conflicts: [], freeFrom: null };
+            if (excludeSet && excludeSet.has(n)) return;
+            ensurePerson(n);
 
             const stageNorm = normalizeStage(project.stage || '');
             const completed = projectAssignmentCompleted(project);
@@ -1419,12 +1497,88 @@ function buildResourceMap(projects) {
         });
     }
 
+    /**
+     * Sibling tab rows → one merged assignment per person+role on the project.
+     * Active pages drive the window; person is busy until their last active page's release.
+     * Returns the set of people covered so master-row fallback can skip them.
+     */
+    function pushSiblingAssignments(project, siblingAssignments) {
+        const merged = {};
+        siblingAssignments.forEach(sa => {
+            splitAssigneeNames(sa.person).forEach(n => {
+                if (!isValidResourceName(n)) return;
+                const key = `${n}|${sa.role}`;
+                const cur = merged[key] || (merged[key] = {
+                    name: n, role: sa.role, pages: 0, activePages: 0,
+                    start: null, endActive: null, endDone: null, allDone: true, stage: sa.stage,
+                });
+                cur.pages += 1;
+                const start = sa.start ? parseSmartDate(sa.start) : null;
+                if (start && !isNaN(start.getTime()) && (!cur.start || start < cur.start)) cur.start = startOfDay(start);
+                const end = sa.end ? parseSmartDate(sa.end) : null;
+                const endOk = end && !isNaN(end.getTime()) ? startOfDay(end) : null;
+                if (sa.completed) {
+                    if (endOk && (!cur.endDone || endOk > cur.endDone)) cur.endDone = endOk;
+                } else {
+                    cur.allDone = false;
+                    cur.activePages += 1;
+                    cur.stage = sa.stage;
+                    if (endOk && (!cur.endActive || endOk > cur.endActive)) cur.endActive = endOk;
+                }
+            });
+        });
+
+        const projCompleted = projectAssignmentCompleted(project);
+        const projEnd   = projectAssignmentEnd(project);
+        const projStart = project.start_date ? parseSmartDate(project.start_date) : null;
+        const covered = new Set();
+
+        Object.values(merged).forEach(m => {
+            covered.add(m.name);
+            ensurePerson(m.name);
+            const completed = projCompleted || m.allDone;
+            let end = completed ? (m.endDone || m.endActive) : m.endActive;
+            if (!end) end = projEnd && !isNaN(projEnd.getTime()) ? projEnd : null;
+            let start = m.start || (projStart && !isNaN(projStart.getTime()) ? startOfDay(projStart) : null);
+
+            map[m.name].assignments.push({
+                projectId:   project.id,
+                projectName: project.name,
+                role:        m.role,
+                start,
+                end,
+                status:      project.status,
+                stage:       completed ? 'Live' : (m.stage || normalizeStage(project.stage || '')),
+                completed,
+                pages:       m.pages,
+                activePages: m.activePages,
+                source:      'sibling',
+            });
+        });
+        return covered;
+    }
+
     projects.forEach(p => {
-        push(p.owner,       'Owner',     p);
-        push(p.developer,   'Developer', p);
-        push(p.qa_engineer, 'QA',        p);
-        push(p.ba,          'BA',        p);
-        push(p.page_owner,  'Page owner',p);
+        const sib = featureOn('SIBLING_RESOURCE_MAP')
+            && p.roadmap?.hasSibling
+            && Array.isArray(p.roadmap.assignments) && p.roadmap.assignments.length
+            ? p.roadmap.assignments : null;
+
+        push(p.owner, 'Owner', p);
+        push(p.ba,    'BA',    p);
+
+        if (sib) {
+            // Page-level roles come from the sibling tab; master row only fills in
+            // people the sibling tab doesn't mention (e.g. master-only Developer).
+            const covered = pushSiblingAssignments(p, sib);
+            push(p.developer,   'Developer',  p, covered);
+            push(p.qa_engineer, 'QA',         p, covered);
+            push(p.page_owner,  'Page owner', p, covered);
+        } else {
+            push(p.developer,   'Developer',  p);
+            push(p.qa_engineer, 'QA',         p);
+            push(p.page_owner,  'Page owner', p);
+        }
     });
 
     const today = new Date();
@@ -1548,7 +1702,7 @@ function computeAttentionScore(project, alerts, resourceMap, today) {
         }
     }
 
-    const people = [project.owner, project.developer].filter(Boolean);
+    const people = [...splitAssigneeNames(project.owner), ...splitAssigneeNames(project.developer)].filter(n => isValidResourceName(n));
     people.forEach(name => {
         const person = resourceMap[name];
         if (!person) return;
