@@ -488,8 +488,10 @@ function renderUpcomingLaunches() {
 }
 
 function renderStageFunnel() {
-    const all    = AppState.allProjects;
-    const stages = ['Planning','Development','QA','Release','Live'];
+    const funnel = typeof getFunnelStageCounts === 'function'
+        ? getFunnelStageCounts()
+        : { stages: ['Planning','Development','QA','Release','Live'], counts: AppState.stageCounts, overdueByStage: {}, alertByStage: {} };
+    const { stages, counts, overdueByStage, alertByStage } = funnel;
     const stageColors = {
         'Planning':    '#8B5CF6',
         'Development': '#1A73E8',
@@ -497,16 +499,16 @@ function renderStageFunnel() {
         'Release':     '#EF4444',
         'Live':        '#1E8E3E',
     };
-    const maxCount = Math.max(...stages.map(s => all.filter(p => projectFunnelStage(p) === s).length), 1);
+    const maxCount = Math.max(...stages.map(s => counts[s] || 0), 1);
 
     const rows = stages.map(s => {
-        const count   = all.filter(p => projectFunnelStage(p) === s).length;
-        const overdueN = all.filter(p => projectFunnelStage(p) === s && AppState.alerts.overdue.some(a => a.id === p.id)).length;
-        const alertN   = all.filter(p => projectFunnelStage(p) === s && alertBucketFor(p.id, AppState.alerts)).length;
-        const pct     = Math.round((count / maxCount) * 100);
-        const color   = stageColors[s] || 'var(--accent-primary)';
+        const count    = counts[s] || 0;
+        const overdueN = overdueByStage[s] || 0;
+        const alertN   = alertByStage[s] || 0;
+        const pct      = Math.round((count / maxCount) * 100);
+        const color    = stageColors[s] || 'var(--accent-primary)';
         return `
-        <div class="ov-funnel-row" onclick="App.setFilterAndNavigate('stage','${s}','projects')">
+        <div class="ov-funnel-row" onclick="App.analyticsDrill('stage','${s}')">
             <div class="ov-funnel-label">${s}</div>
             <div class="ov-funnel-track">
                 <div class="ov-funnel-fill" style="width:0%;background:${color};" data-fill="${pct}"></div>
@@ -514,7 +516,7 @@ function renderStageFunnel() {
             <div class="ov-funnel-right">
                 <span class="ov-funnel-count">${count}</span>
                 ${overdueN ? `<span class="ov-funnel-chip ov-funnel-chip--red">${overdueN}!</span>` : ''}
-                ${alertN > overdueN ? `<span class="ov-funnel-chip ov-funnel-chip--amber">${alertN - overdueN}⚠</span>` : ''}
+                ${alertN ? `<span class="ov-funnel-chip ov-funnel-chip--amber">${alertN}⚠</span>` : ''}
             </div>
         </div>`;
     }).join('');
@@ -522,6 +524,7 @@ function renderStageFunnel() {
     return `
     <div class="ov-section-header">
         <h2 class="ov-section-title">Stage Funnel</h2>
+        <span class="ov-section-badge">${funnel.total || 0} ${typeof deliveryUnitWord === 'function' ? deliveryUnitWord(true) : 'pages'}</span>
     </div>
     <div class="card-light ov-funnel-card">${rows}</div>`;
 }
@@ -2202,7 +2205,7 @@ function buildVelocityData() {
             label: d.toLocaleString('en-US', { month: 'short', year: '2-digit' }),
             onTime: 0, late: 0 });
     }
-    AppState.allProjects.forEach(p => {
+    getAnalyticsUnits().forEach(p => {
         if (!p.actual_live_date) return;
         const live = parseSmartDate(p.actual_live_date);
         if (isNaN(live.getTime())) return;
@@ -2216,34 +2219,45 @@ function buildVelocityData() {
 }
 
 function buildStageHeatmap() {
-    const STAGES = ['Planning', 'Development', 'QA', 'Release', 'Live'];
-    const today  = new Date();
-    const map    = {};
-    STAGES.forEach(s => map[s] = { count: 0, totalDays: 0 });
-    AppState.allProjects.forEach(p => {
-        const ns = normalizeStage(p.stage || '');
-        if (!map[ns]) return;
-        map[ns].count++;
-        // For active (non-Live) stages: days since start_date (= total project age, not days in current stage)
-        // For Live, we don't track duration here
-        if (ns !== 'Live' && p.start_date) {
-            const start = parseSmartDate(p.start_date);
-            if (!isNaN(start.getTime())) {
-                const days = Math.max(0, Math.round((today - start) / 86400000));
-                map[ns].totalDays += days;
+    // Global benchmark: avg actual days spent in each stage, learned from delivery units
+    // (sibling pages for Sheets, subtasks for ClickUp when enriched).
+    const ws = (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
+    const flowDef = typeof getWorkspaceStageFlow === 'function' ? getWorkspaceStageFlow(ws) : [];
+    const flow = flowDef.length ? flowDef.map(f => f.stage) : ((typeof STAGE_FLOW !== 'undefined') ? STAGE_FLOW.map(f => f.stage) : []);
+    const agg = {};
+    flow.forEach(s => agg[s] = { stage: s, totalDays: 0, count: 0, ongoing: 0, pipelineTotal: 0, pipelineCount: 0 });
+
+    getAnalyticsUnits().forEach(u => {
+        (u.stageDurations || []).forEach(d => {
+            if (!agg[d.stage]) agg[d.stage] = { stage: d.stage, totalDays: 0, count: 0, ongoing: 0, pipelineTotal: 0, pipelineCount: 0 };
+            agg[d.stage].totalDays += d.days;
+            agg[d.stage].count += 1;
+            if (d.ongoing) agg[d.stage].ongoing += 1;
+        });
+        if (u.reachedLive && agg['Live']) {
+            agg['Live'].count += 1;
+            const total = u.pipelineActualDays ?? u.pipelineExpectedDays;
+            if (total != null) {
+                agg['Live'].pipelineTotal += total;
+                agg['Live'].pipelineCount += 1;
             }
         }
     });
-    return STAGES.map(s => ({
-        stage: s,
-        count: map[s].count,
-        avgDays: map[s].count ? Math.round(map[s].totalDays / map[s].count) : 0,
-    }));
+
+    const order = flow.length ? flow : Object.keys(agg);
+    return order.map(s => {
+        const a = agg[s];
+        const isLive = s === 'Live';
+        const avgDays = isLive
+            ? (a.pipelineCount ? Math.round(a.pipelineTotal / a.pipelineCount) : 0)
+            : (a.count ? Math.round(a.totalDays / a.count) : 0);
+        return { stage: s, isLive, count: isLive ? a.count : a.count, avgDays, ongoing: a.ongoing };
+    }).filter(r => r.count > 0);
 }
 
 function buildClientScorecard() {
     const clients = {};
-    AppState.allProjects.forEach(p => {
+    getAnalyticsUnits().forEach(p => {
         const c = (p.client || 'Unknown').trim();
         if (!clients[c]) clients[c] = { name: c, active: 0, live: 0, onTime: 0, liveCount: 0, delayDays: 0, delayCount: 0, H: 0, M: 0, L: 0 };
         const ns = normalizeStage(p.stage || '');
@@ -2275,7 +2289,7 @@ function buildPredictiveList() {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const results = [];
-    AppState.allProjects.forEach(p => {
+    getAnalyticsUnits().forEach(p => {
         const pred = computeCompletionPrediction(p, today);
         if (!pred) return;
         results.push({
@@ -2304,7 +2318,10 @@ function renderAiInsightsShell(mountId, title, subtitle) {
 ══════════════════════════════════════════ */
 function renderAnalytics() {
     const today    = new Date(); today.setHours(0,0,0,0);
-    const projects = AppState.allProjects;
+    const unitPlur = typeof deliveryUnitWord === 'function' ? deliveryUnitWord(true) : 'pages';
+    // Analytics works on per-page delivery units from the sibling sheet (Streak projects),
+    // falling back to the master row only for unlinked / ClickUp items.
+    const projects = getAnalyticsUnits();
     const liveProjs = projects.filter(p => normalizeStage(p.stage||'') === 'Live');
 
     /* ── Section 1: KPI strip ── */
@@ -2341,25 +2358,25 @@ function renderAnalytics() {
 
     const kpiHTML = `
     <div class="an-kpi-strip">
-        <div class="an-kpi-tile ${onTimeRate >= 70 ? 'an-kpi-tile--green' : onTimeRate >= 40 ? 'an-kpi-tile--amber' : 'an-kpi-tile--red'}">
+        <div class="an-kpi-tile an-kpi-tile--click ${onTimeRate >= 70 ? 'an-kpi-tile--green' : onTimeRate >= 40 ? 'an-kpi-tile--amber' : 'an-kpi-tile--red'}" onclick="App.analyticsDrill('ontime')">
             <div class="an-kpi-label">On-Time Rate</div>
             <div class="an-kpi-value">${onTimeRate}%</div>
-            <div class="an-kpi-sub">${onTimeCount} of ${liveWithDates.length} live projects</div>
+            <div class="an-kpi-sub">${onTimeCount} of ${liveWithDates.length} live ${unitPlur}</div>
         </div>
-        <div class="an-kpi-tile ${avgDelay === 0 ? 'an-kpi-tile--green' : avgDelay <= 7 ? 'an-kpi-tile--amber' : 'an-kpi-tile--red'}">
+        <div class="an-kpi-tile an-kpi-tile--click ${avgDelay === 0 ? 'an-kpi-tile--green' : avgDelay <= 7 ? 'an-kpi-tile--amber' : 'an-kpi-tile--red'}" onclick="App.analyticsDrill('delayed')">
             <div class="an-kpi-label">Avg Delay</div>
             <div class="an-kpi-value">${avgDelay > 0 ? '+' + avgDelay + 'd' : '0d'}</div>
             <div class="an-kpi-sub">${delayedLive.length} delayed deliveries</div>
         </div>
-        <div class="an-kpi-tile ${pipelineHealth >= 60 ? 'an-kpi-tile--green' : pipelineHealth >= 30 ? 'an-kpi-tile--amber' : 'an-kpi-tile--red'}">
+        <div class="an-kpi-tile an-kpi-tile--click ${pipelineHealth >= 60 ? 'an-kpi-tile--green' : pipelineHealth >= 30 ? 'an-kpi-tile--amber' : 'an-kpi-tile--red'}" onclick="App.analyticsDrill('pipeline')">
             <div class="an-kpi-label">Pipeline Health</div>
             <div class="an-kpi-value">${pipelineHealth}%</div>
             <div class="an-kpi-sub">${onTrackActive} of ${activeProjs.length} on track</div>
         </div>
-        <div class="an-kpi-tile an-kpi-tile--blue">
+        <div class="an-kpi-tile an-kpi-tile--click an-kpi-tile--blue" onclick="App.analyticsDrill('velocity30')">
             <div class="an-kpi-label">Velocity (30d)</div>
             <div class="an-kpi-value">${velocity30}</div>
-            <div class="an-kpi-sub">projects went live</div>
+            <div class="an-kpi-sub">${unitPlur} went live</div>
         </div>
     </div>`;
 
@@ -2374,8 +2391,9 @@ function renderAnalytics() {
         const barH    = Math.round((total / maxBar) * 100);
         const onPct   = total ? Math.round(m.onTime / total * 100) : 0;
         const isCur   = m.month === curMonth && m.year === curYear;
+        const clickAttr = total ? ` onclick="App.analyticsDrill('velocity','${m.year}-${m.month}')"` : '';
         return `
-        <div class="an-vel-col">
+        <div class="an-vel-col${total ? ' an-vel-col--click' : ''}"${clickAttr} title="${total ? 'Click to see launches in ' + m.label : ''}">
             <div class="an-vel-count">${total || ''}</div>
             <div class="an-vel-bar-wrap">
                 <div class="an-vel-bar ${isCur ? 'an-vel-bar--current' : ''}" style="height:${barH}%;">
@@ -2400,25 +2418,33 @@ function renderAnalytics() {
         <div class="an-vel-chart">${velBars}</div>
     </div>`;
 
-    /* ── Section 3: Stage Heatmap ── */
+    /* ── Section 3: Stage Heatmap (global stage-duration benchmark) ── */
     const heatmap    = buildStageHeatmap();
-    const maxCount   = Math.max(...heatmap.map(s => s.count), 1);
-    const STAGE_COLORS = { Planning:'#A78BFA', Development:'#60A5FA', QA:'#34D399', Release:'#FBBF24', Live:'#10B981' };
+    const maxAvg     = Math.max(...heatmap.filter(s => !s.isLive).map(s => s.avgDays), 1);
+    const FLOW_COLORS = {
+        'Planning':'#A78BFA', 'Content':'#A78BFA', 'Story Req':'#818CF8',
+        'UI Dev':'#60A5FA', 'Streak Dev':'#3B82F6', 'Streak QA':'#34D399', 'Live':'#10B981',
+    };
 
     const heatRows = heatmap.map(s => {
-        const barW   = Math.round((s.count / maxCount) * 100);
-        const isHot  = s.avgDays > 30 && s.stage !== 'Live';
-        const color  = STAGE_COLORS[s.stage] || '#888';
+        const barW   = s.isLive
+            ? (s.avgDays ? Math.min(100, Math.round((s.avgDays / Math.max(maxAvg, s.avgDays)) * 100)) : 100)
+            : Math.round((s.avgDays / maxAvg) * 100);
+        const isHot  = s.avgDays > 21 && !s.isLive;
+        const color  = FLOW_COLORS[s.stage] || '#888';
+        const safe   = escapeHtml(String(s.stage).replace(/\\/g, '\\\\').replace(/'/g, "\\'"));
+        const ongoingNote = s.ongoing ? ` · ${s.ongoing} active` : '';
+        const dayLabel = s.isLive
+            ? (s.avgDays ? `avg ${s.avgDays}d end-to-end` : `${s.count} live`)
+            : (s.avgDays ? `avg ${s.avgDays}d` : '—');
         return `
-        <div class="an-heat-row">
-            <div class="an-heat-stage">${s.stage}</div>
+        <div class="an-heat-row an-heat-row--click" onclick="App.analyticsDrill('stagetime','${safe}')" title="Click to see per-page days in ${escapeHtml(s.stage)}${ongoingNote}">
+            <div class="an-heat-stage" title="${escapeHtml(s.stage)}">${escapeHtml(s.stage)}</div>
             <div class="an-heat-track">
-                <div class="an-heat-bar" style="width:${barW}%;background:${color};"></div>
+                <div class="an-heat-bar" style="width:${barW || 4}%;background:${color};"></div>
             </div>
-            <div class="an-heat-count">${s.count}</div>
-            <div class="an-heat-days ${isHot ? 'an-heat-days--hot' : ''}">
-                ${s.stage !== 'Live' ? (s.avgDays ? `avg ${s.avgDays}d` : '—') : '✓'}
-            </div>
+            <div class="an-heat-count" title="${s.count} page(s) contributed${ongoingNote}">${s.count}</div>
+            <div class="an-heat-days ${isHot ? 'an-heat-days--hot' : ''}">${dayLabel}</div>
         </div>`;
     }).join('');
 
@@ -2426,10 +2452,10 @@ function renderAnalytics() {
     <div class="an-section card-light">
         <div class="an-section-header">
             <div class="an-section-title">Stage Heatmap</div>
-            <div class="an-section-sub">Projects per stage · avg project age from start date</div>
+            <div class="an-section-sub">Predictive benchmark · avg days per stage from all live + active ${unitPlur}</div>
         </div>
-        <div class="an-heat-list">${heatRows}</div>
-        <div class="an-heat-hint">Highlighted red = projects have been running for avg >30 days (possible bottleneck)</div>
+        <div class="an-heat-list">${heatRows || '<div style="padding:20px;color:var(--text-muted);font-size:13px;">No stage transition dates found in sibling sheets.</div>'}</div>
+        <div class="an-heat-hint">avg Nd = learned from real dates · includes ongoing time for active ${unitPlur} · red = avg &gt;21 days</div>
     </div>`;
 
     /* ── Section 4: Client Scorecard ── */
@@ -2562,7 +2588,7 @@ function renderAnalytics() {
         const avc  = stringToColor(d.name);
         const init = getInitials(d.name);
         return `
-        <div class="an-lb-row">
+        <div class="an-lb-row" onclick="App.analyticsDrill('developer','${escapeHtml(d.name)}')" title="Click to see ${escapeHtml(d.name)}'s active pages">
             <div class="an-lb-avatar" style="background:${avc}">${init}</div>
             <div class="an-lb-info">
                 <div class="an-lb-name">${escapeHtml(d.name)}</div>
@@ -2634,10 +2660,10 @@ function initOverviewCharts() {
         { label: 'QA',       value: counts['QA'] || 0, color: 'var(--stage-qa)' },
         { label: 'Live',     value: counts['Live'] || 0, color: 'var(--stage-live)' },
     ];
-    renderDonutChart('chart-donut', donutData, String(AppState.totalProjects));
+    renderDonutChart('chart-donut', donutData, String(AppState.funnelPageTotal));
 
     // 3. Stage Bar
-    renderStageBar('chart-stage-bar', AppState.stageCounts, AppState.totalProjects);
+    renderStageBar('chart-stage-bar', AppState.stageCounts, AppState.funnelPageTotal || AppState.totalProjects);
 }
 
 /* ══════════════════════════════════════════
@@ -3263,6 +3289,175 @@ function buildProjectSnapshot(p) {
     <p class="streak-snapshot-hint">Connect a sibling tab via <code>detail_gid</code> or <code>detail_csv_url</code> to unlock the full roadmap table.</p>`;
 }
 
+function renderClickUpDeliverablesTableHTML(pages) {
+    if (!pages || !pages.length) {
+        return '<p class="streak-roadmap-placeholder">No subtasks on this ClickUp task yet.</p>';
+    }
+    const tbody = pages.map((pg, i) => {
+        const pct = pg.progress || 0;
+        const normalized = normalizeStage(pg.stage || '');
+        const bar = `
+            <div class="streak-roadmap-progress">
+                <div class="streak-roadmap-progress-bar" aria-hidden="true">
+                    <span style="width:${pct}%"></span>
+                </div>
+                <span class="streak-roadmap-progress-pct">${pct}%</span>
+            </div>`;
+        const stPill = `<span class="stage-pill streak-roadmap-stage ${stageClass(normalized)}">${escapeHtml(pg.rawStage || pg.stage || '—')}</span>`;
+        const stat = pg.status
+            ? `<span class="status-badge streak-roadmap-status ${siblingStatusKeyFromValue(pg.status)}">${escapeHtml(pg.status)}</span>`
+            : '<span class="streak-roadmap-dash">—</span>';
+        const sel = i === 0 ? ' streak-roadmap-row--selected' : '';
+        return `
+        <tr class="streak-roadmap-row${sel}" role="button" tabindex="0" data-index="${i}" data-sibling-index="${i}"
+            onclick="App.showSiblingPageDetail(${i})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();App.showSiblingPageDetail(${i})}">
+            <td class="streak-roadmap-cell-title">${escapeHtml(pg.page || '—')}</td>
+            <td>${escapeHtml(pg.developer || '—')}</td>
+            <td>${stPill}</td>
+            <td>${stat}</td>
+            <td>${pg.release ? escapeHtml(formatDate(pg.release)) : '<span class="streak-roadmap-dash">—</span>'}</td>
+            <td class="streak-roadmap-cell-progress">${bar}</td>
+        </tr>`;
+    }).join('');
+    return `
+    <div class="streak-roadmap-table-wrap">
+        <table class="streak-roadmap-table" aria-label="ClickUp deliverables">
+            <thead><tr>
+                <th>Deliverable</th><th>Assignee</th><th>Stage</th><th>Status</th><th>Due</th><th>Progress</th>
+            </tr></thead>
+            <tbody>${tbody}</tbody>
+        </table>
+    </div>`;
+}
+
+function buildClickUpAsidePanels(p, detail, pages) {
+    const rel = getRelativeDate(p.release_date);
+    const relFg = rel.overdue ? 'var(--status-delayed)' : 'var(--text-muted)';
+    const init = getInitials(p.owner);
+    const avc = stringToColor(p.owner);
+
+    let checklistsHtml = '';
+    if (detail.checklists && detail.checklists.length) {
+        const items = detail.checklists.map(cl => {
+            const rows = (cl.items || []).map(it => `
+                <li class="streak-cu-check-item ${it.resolved ? 'streak-cu-check-item--done' : ''}">
+                    ${it.resolved ? '✓' : '○'} ${escapeHtml(it.name || '')}
+                </li>`).join('');
+            return `<div class="streak-cu-checklist"><div class="streak-cu-checklist-name">${escapeHtml(cl.name || 'Checklist')}</div><ul>${rows}</ul></div>`;
+        }).join('');
+        checklistsHtml = `<div class="streak-pd-aside-block"><h4 class="streak-pd-aside-h">Checklists</h4>${items}</div>`;
+    }
+
+    let customFieldsHtml = '';
+    const cfs = (detail.customFields || []).filter(f => f.value != null && f.value !== '');
+    if (cfs.length) {
+        const rows = cfs.map(f => `
+            <div class="streak-pd-devtrack-dl-row">
+                <dt>${escapeHtml(f.name || '')}</dt>
+                <dd>${escapeHtml(String(f.value))}</dd>
+            </div>`).join('');
+        customFieldsHtml = `<div class="streak-pd-aside-block"><h4 class="streak-pd-aside-h">Custom fields</h4><dl class="streak-pd-devtrack-dl streak-pd-devtrack-dl--compact">${rows}</dl></div>`;
+    }
+
+    let tagsBlk = '';
+    const tags = detail.tags || p.tags || [];
+    if (tags.length) {
+        tagsBlk = `<div class="streak-pd-tags streak-pd-devtrack-tags">${tags.map(t => `<span class="streak-pd-tag">${escapeHtml(typeof t === 'string' ? t : (t.name || t))}</span>`).join('')}</div>`;
+    }
+
+    const pagePanels = (pages || []).map((pg, i) => {
+        const display = i === 0 ? 'block' : 'none';
+        return `
+        <div class="streak-sibling-panel streak-pd-aside-panel" data-sibling-index="${i}" style="display:${display}">
+            <header class="streak-pd-aside-sticky-zone">
+                <div class="streak-pd-aside-hero">
+                    <div class="streak-pd-aside-avatar" style="background:${stringToColor(pg.developer || p.owner)}">${getInitials(pg.developer || p.owner)}</div>
+                    <div>
+                        <h2 class="streak-pd-aside-name">${escapeHtml(pg.page || 'Deliverable')}</h2>
+                        <p class="streak-pd-aside-kicker">${escapeHtml(pg.rawStage || pg.stage || '')} · ${pg.progress || 0}%</p>
+                    </div>
+                </div>
+            </header>
+            <div class="streak-pd-aside-scroll-body">
+                ${buildStreakPdDl([
+                    ['Assignee', pg.developer || '—'],
+                    ['Due', pg.release ? formatDate(pg.release) : '—'],
+                    ['Status', pg.status || '—'],
+                    ['Progress', `${pg.progress || 0}%`],
+                ])}
+            </div>
+        </div>`;
+    }).join('');
+
+    const pageSelect = pages && pages.length > 1 ? `
+        <label class="streak-pd-aside-h" for="streak-sibling-page-select">Deliverable</label>
+        <select id="streak-sibling-page-select" class="streak-pd-aside-select" onchange="App.showSiblingPageDetail(this.selectedIndex)">
+            ${pages.map((pg, i) => `<option value="${i}">${escapeHtml(pg.page || `Item ${i + 1}`)}</option>`).join('')}
+        </select>` : '';
+
+    const openLink = detail.url
+        ? `<a class="streak-pd-action-btn" href="${escapeHtml(detail.url)}" target="_blank" rel="noopener">Open in ClickUp ↗</a>`
+        : '';
+
+    return `
+    <div id="streak-sibling-panels" class="streak-sibling-panels streak-pd-aside-panels-inner">
+        ${pages && pages.length ? pagePanels : `
+        <div class="streak-sibling-panel streak-pd-aside-panel" style="display:block">
+            <header class="streak-pd-aside-sticky-zone">
+                <div class="streak-pd-aside-hero">
+                    <div class="streak-pd-aside-avatar" style="background:${avc}">${init}</div>
+                    <div>
+                        <h2 class="streak-pd-aside-name">${escapeHtml(p.name)}</h2>
+                        <p class="streak-pd-aside-kicker">ClickUp task · <span style="color:${relFg}">${escapeHtml(rel.daysText ? rel.daysText + ' vs due' : 'schedule')}</span></p>
+                    </div>
+                </div>
+                ${openLink}
+                <button type="button" class="streak-pd-aside-back" onclick="App.navigate('projects')">← Back to directory</button>
+            </header>
+            <div class="streak-pd-aside-scroll-body">
+                ${checklistsHtml}
+                ${customFieldsHtml}
+                ${tagsBlk}
+                ${p.notes ? `<div class="streak-pd-devtrack-notes">${escapeHtml(p.notes)}</div>` : ''}
+            </div>
+        </div>`}
+        ${pages && pages.length ? `
+        <div class="streak-sibling-panel streak-pd-aside-panel streak-pd-aside-panel--nav" style="display:block;margin-top:12px;">
+            ${pageSelect}
+            ${openLink}
+            <button type="button" class="streak-pd-aside-back" onclick="App.navigate('projects')">← Back to directory</button>
+        </div>` : ''}
+    </div>`;
+}
+
+function buildClickUpTaskSnapshot(p, detail) {
+    const fields = [
+        { label: 'Task ID', value: p.id },
+        { label: 'Client', value: p.client || '—' },
+        { label: 'Stage', value: p.stage || '—' },
+        { label: 'Status', value: statusLabel(p.status) },
+        { label: 'Progress', value: `${projectDisplayProgress(p)}%` },
+        { label: 'Due date', value: p.release_date ? formatDate(p.release_date) : '—' },
+        { label: 'Owner', value: p.owner || '—' },
+    ];
+    const cells = fields.map(f => `
+        <div class="streak-snapshot-cell">
+            <div class="streak-snapshot-label">${escapeHtml(f.label)}</div>
+            <div class="streak-snapshot-value">${escapeHtml(f.value)}</div>
+        </div>`).join('');
+    let extra = '';
+    if (detail.description || p.notes) {
+        extra += `<div class="streak-pd-devtrack-notes" style="margin-top:16px;">${escapeHtml(detail.description || p.notes)}</div>`;
+    }
+    if (detail.url) {
+        extra += `<p style="margin-top:12px;"><a href="${escapeHtml(detail.url)}" target="_blank" rel="noopener">Open in ClickUp ↗</a></p>`;
+    }
+    return `
+    <div class="streak-snapshot-grid">${cells}</div>
+    ${extra}
+    <p class="streak-snapshot-hint">Add subtasks in ClickUp to unlock deliverable-level funnel and analytics.</p>`;
+}
+
 /**
  * Shared data for both project layouts (switch via CONFIG.PROJECT_PAGE_LAYOUT).
  * @param {object} p
@@ -3294,6 +3489,19 @@ function buildProjectPageViewModel(p, siblingResult) {
 
     if (siblingResult.source === 'error') {
         siblingWarning = `<div class="streak-roadmap-banner streak-roadmap-banner--warn">${escapeHtml(siblingResult.error || 'Could not load line items')}</div>`;
+    } else if (siblingResult.clickup && siblingResult.pages && siblingResult.pages.length) {
+        kTotal = siblingResult.total || siblingResult.pages.length;
+        kLive = siblingResult.live;
+        kProg = siblingResult.inprog;
+        kPend = siblingResult.pending;
+        kAvg = siblingResult.avgPct;
+        roadmapInner = siblingWarning + renderClickUpDeliverablesTableHTML(siblingResult.pages);
+        asidePanels = buildClickUpAsidePanels(p, siblingResult, siblingResult.pages);
+        hasRoadmapRows = true;
+    } else if (siblingResult.clickup) {
+        roadmapInner = buildClickUpTaskSnapshot(p, siblingResult);
+        asidePanels = buildClickUpAsidePanels(p, siblingResult, []);
+        hasRoadmapRows = false;
     } else if (siblingResult.hasSibling && siblingResult.table) {
         const { headers, rows } = siblingResult.table;
         const nCol = headers.length
@@ -3862,6 +4070,323 @@ function renderIntelligence() {
 
 
 /* ══════════════════════════════════════════════════════════
+   PERFORMANCE — Zoho timelog (leadership executive view)
+   ══════════════════════════════════════════════════════════ */
+function renderPerformanceUploadEmpty() {
+    return `
+    <div class="perf-doc">
+        <div class="perf-doc-block perf-doc-block--empty">
+            <h1 class="perf-doc-title">Project Command Center</h1>
+            <p class="perf-doc-lead">Connect Zoho timelog data to see project health, risks, ownership, and delivery outcomes in one leadership-ready view.</p>
+            <div class="perf-empty-actions">
+                <button type="button" class="btn btn-primary" onclick="App.triggerZohoUpload()">Upload timelog CSV</button>
+                <button type="button" class="btn btn-secondary" onclick="App.loadZohoSample()">Preview with sample project (Soukya)</button>
+            </div>
+            <div class="perf-dropzone" id="perf-dropzone"
+                 ondragover="event.preventDefault(); this.classList.add('perf-dropzone--over')"
+                 ondragleave="this.classList.remove('perf-dropzone--over')"
+                 ondrop="App.handleZohoDrop(event)">
+                <span>Drag and drop a Zoho Projects timelog export here</span>
+            </div>
+        </div>
+    </div>`;
+}
+
+function renderPerformanceAttentionItem(item) {
+    const sev = item.severity || 'medium';
+    if (sev === 'none') {
+        return `
+        <div class="perf-callout perf-callout--ok">
+            <div class="perf-callout-title">${escapeHtml(item.title)}</div>
+            <p class="perf-callout-body">${escapeHtml(item.detail)}</p>
+        </div>`;
+    }
+    return `
+    <div class="perf-callout perf-callout--${sev}">
+        <div class="perf-callout-title">${escapeHtml(item.title)}</div>
+        <p class="perf-callout-body">${escapeHtml(item.detail)}</p>
+    </div>`;
+}
+
+function renderPerformance() {
+    const entries = AppState.filteredTimelogEntries;
+    if (!AppState.timelogEntries.length) return renderPerformanceUploadEmpty();
+
+    const allEntries = AppState.timelogEntries;
+    const f = AppState.timelogFilters;
+    const brief = computeLeadershipBrief(entries, allEntries, {
+        projectName: f.project,
+        clientName: entries[0]?.client,
+        filters: f,
+    });
+
+    const totalH = brief.totalHours || 1;
+    const maxJobH = Math.max(...brief.jobAgg.map(j => j.hours), 1);
+    const maxWeekH = Math.max(...brief.weekAgg.map(w => w.total), 1);
+
+    const projects = AppState.timelogMeta?.projects || [...new Set(allEntries.map(e => e.project).filter(Boolean))];
+    const teams = [...new Set(allEntries.map(e => e.team))].sort();
+    const people = [...new Set(allEntries.map(e => e.person))].sort();
+
+    const sel = (name, val, options, allLabel) => {
+        const opts = [`<option value="">${allLabel}</option>`]
+            .concat(options.map(o => `<option value="${escapeHtml(o)}" ${val === o ? 'selected' : ''}>${escapeHtml(o)}</option>`));
+        return `<select class="perf-filter-select" onchange="App.setTimelogFilter('${name}', this.value || null)">${opts.join('')}</select>`;
+    };
+
+    const approvalOpts = ['all', 'Approved', 'Rejected', 'Not Submitted'].map(s => {
+        const v = s === 'all' ? 'all' : s;
+        const selVal = f.approvalStatus || 'Approved';
+        return `<option value="${v}" ${selVal === v ? 'selected' : ''}>${s === 'all' ? 'All records' : s}</option>`;
+    }).join('');
+
+    const legendHTML = brief.teamAgg.map(({ team, hours }) => {
+        const pal = ZOHO_TEAM_COLORS[team] || ZOHO_TEAM_COLORS.Other;
+        const pct = Math.round((hours / totalH) * 100);
+        return `
+        <div class="perf-legend-item">
+            <span class="perf-legend-dot" style="background:${pal.color}"></span>
+            <span class="perf-legend-label">${escapeHtml(team)}</span>
+            <span class="perf-legend-val">${formatZohoHours(hours)} · ${pct}%</span>
+        </div>`;
+    }).join('');
+
+    const weekBars = brief.weekAgg.map(w => {
+        const barH = Math.round((w.total / maxWeekH) * 100);
+        const segments = Object.entries(w.teams)
+            .sort((a, b) => b[1] - a[1])
+            .map(([team, h]) => {
+                const pct = w.total ? (h / w.total) * 100 : 0;
+                const pal = ZOHO_TEAM_COLORS[team] || ZOHO_TEAM_COLORS.Other;
+                return `<div class="perf-week-seg" style="height:${pct}%;background:${pal.color}" title="${escapeHtml(team)}: ${formatZohoHours(h)}"></div>`;
+            }).join('');
+        return `
+        <div class="perf-week-col" title="Week of ${escapeHtml(w.label)}: ${formatZohoHours(w.total)}">
+            <div class="perf-week-count">${w.total ? formatZohoHours(w.total) : ''}</div>
+            <div class="perf-week-bar-wrap">
+                <div class="perf-week-bar" style="height:${barH}%">${segments}</div>
+            </div>
+            <div class="perf-week-label">${escapeHtml(w.label)}</div>
+        </div>`;
+    }).join('');
+
+    const ownerRows = brief.ownership.map(p => {
+        const pct = Math.round((p.hours / totalH) * 100);
+        const barW = Math.min(100, pct);
+        return `
+        <div class="perf-owner-row">
+            <div class="perf-owner-name">${escapeHtml(p.person)}<span class="perf-owner-meta">${escapeHtml(p.primaryTeam)}</span></div>
+            <div class="perf-owner-bar-wrap"><div class="perf-owner-bar" data-fill="${barW}" style="width:0%"></div></div>
+            <div class="perf-owner-stat">${formatZohoHours(p.hours)} · ${pct}%</div>
+        </div>`;
+    }).join('');
+
+    const milestoneRows = brief.milestones.length
+        ? brief.milestones.map(m => `
+        <div class="perf-milestone-row">
+            <div class="perf-milestone-name">${escapeHtml(m.name)}</div>
+            <div class="perf-milestone-track"><div class="perf-milestone-fill" data-fill="${m.pct}" style="width:0%"></div></div>
+            <div class="perf-milestone-stat">${formatZohoHours(m.hours)} · ${m.pct}%</div>
+        </div>`).join('')
+        : `<p class="perf-muted">No page-level delivery milestones in this period. Effort may be tracked under functional workstreams.</p>`;
+
+    const outcomeRows = brief.outcomes.map(o => `
+        <div class="perf-outcome-row">
+            <span class="perf-outcome-label">${escapeHtml(o.label)}</span>
+            <span class="perf-outcome-hours">${formatZohoHours(o.hours)}</span>
+        </div>`).join('');
+
+    const focusBars = brief.focusAreas.map(j => {
+        const w = Math.round((j.hours / maxJobH) * 100);
+        return `
+        <div class="perf-job-row">
+            <div class="perf-job-label" title="${escapeHtml(j.name)}">${escapeHtml(j.name)}</div>
+            <div class="perf-job-track"><div class="perf-job-fill" data-fill="${w}" style="width:0%"></div></div>
+            <div class="perf-job-hours">${formatZohoHours(j.hours)}</div>
+        </div>`;
+    }).join('');
+
+    const depRows = brief.dependencies.map(d => `
+        <div class="perf-dep-row">
+            <div class="perf-dep-title">${escapeHtml(d.title)}</div>
+            <p class="perf-dep-body">${escapeHtml(d.detail)}</p>
+        </div>`).join('');
+
+    const decisionRows = brief.decisions.map(d => `
+        <li class="perf-decision-item">${escapeHtml(d)}</li>`).join('');
+
+    const detailRows = entries.slice().sort((a, b) => (b.dateObj || 0) - (a.dateObj || 0)).map(e => `
+        <tr>
+            <td>${escapeHtml(e.date)}</td>
+            <td>${escapeHtml(e.person)}</td>
+            <td><span class="perf-team-pill perf-team-pill--sm">${escapeHtml(e.team)}</span></td>
+            <td>${escapeHtml(leadershipJobLabel(e.job_name))}</td>
+            <td>${escapeHtml(leadershipWorkItemLabel(e.work_item))}</td>
+            <td class="perf-num">${formatZohoHours(e.hours)}</td>
+            <td><span class="perf-status perf-status--${String(e.approval_status).toLowerCase().replace(/\s+/g, '-')}">${escapeHtml(e.approval_status || '—')}</span></td>
+            <td class="perf-desc" title="${escapeHtml(e.description)}">${escapeHtml(e.description || '—')}</td>
+        </tr>`).join('');
+
+    const loadedAt = AppState.timelogMeta?.loadedAt
+        ? new Date(AppState.timelogMeta.loadedAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+        : null;
+
+    return `
+    <div class="perf-doc">
+        <header class="perf-doc-header">
+            <div class="perf-doc-header-main">
+                <div class="perf-doc-eyebrow">Executive project view</div>
+                <h1 class="perf-doc-title">${escapeHtml(brief.projectName)}</h1>
+                <div class="perf-doc-meta">
+                    ${brief.clientName ? `<span class="perf-meta-chip">${escapeHtml(brief.clientName)}</span>` : ''}
+                    <span class="perf-meta-chip perf-meta-chip--${brief.health}">${escapeHtml(brief.healthLabel)}</span>
+                    <span class="perf-meta-chip">${escapeHtml(formatZohoDateRange(brief.minDate, brief.maxDate))}</span>
+                    ${loadedAt ? `<span class="perf-meta-muted">Data refreshed ${escapeHtml(loadedAt)}</span>` : ''}
+                </div>
+            </div>
+            <div class="perf-doc-header-actions">
+                <button type="button" class="btn btn-secondary btn-sm" onclick="App.triggerZohoUpload()">Update data</button>
+                <button type="button" class="btn btn-ghost btn-sm" onclick="App.exportTimelogCSV()">Export register</button>
+            </div>
+        </header>
+
+        <div class="perf-exec-banner perf-exec-banner--${brief.health}">
+            <div class="perf-exec-banner-label">Executive summary</div>
+            <p class="perf-exec-banner-text">${escapeHtml(brief.narrative)}</p>
+        </div>
+
+        <div class="perf-toolbar">
+            ${sel('project', f.project, projects, 'All projects')}
+            ${sel('team', f.team, teams, 'All functions')}
+            ${sel('person', f.person, people, 'All owners')}
+            <select class="perf-filter-select" onchange="App.setTimelogFilter('approvalStatus', this.value === 'all' ? 'all' : this.value)">${approvalOpts}</select>
+            <button type="button" class="btn btn-ghost btn-sm" onclick="App.clearTimelogFilters()">Reset</button>
+        </div>
+
+        <div class="perf-metrics-row">
+            <div class="perf-metric">
+                <div class="perf-metric-label">Investment to date</div>
+                <div class="perf-metric-value">${formatZohoHours(brief.totalHours)}</div>
+                <div class="perf-metric-hint">Billable effort logged</div>
+            </div>
+            <div class="perf-metric">
+                <div class="perf-metric-label">Team engaged</div>
+                <div class="perf-metric-value">${brief.people}</div>
+                <div class="perf-metric-hint">Active contributors</div>
+            </div>
+            <div class="perf-metric">
+                <div class="perf-metric-label">Delivery focus</div>
+                <div class="perf-metric-value">${brief.productiveRatio}%</div>
+                <div class="perf-metric-hint">Core delivery vs overhead</div>
+            </div>
+            <div class="perf-metric">
+                <div class="perf-metric-label">Effort pace</div>
+                <div class="perf-metric-value">${escapeHtml(brief.velocityLabel)}</div>
+                <div class="perf-metric-hint">~${formatZohoHours(brief.avgWeekly)}/week avg</div>
+            </div>
+            ${brief.pendingHours > 0 ? `
+            <div class="perf-metric perf-metric--warn">
+                <div class="perf-metric-label">Approval backlog</div>
+                <div class="perf-metric-value">${formatZohoHours(brief.pendingHours)}</div>
+                <div class="perf-metric-hint">${brief.pendingPct}% of all records</div>
+            </div>` : ''}
+        </div>
+
+        <div class="perf-layout">
+            <div class="perf-layout-main">
+                <section class="perf-doc-block">
+                    <h2 class="perf-section-title">Resource allocation</h2>
+                    <p class="perf-section-desc">How investment is distributed across delivery functions — use this to validate staffing matches priorities.</p>
+                    <div class="perf-alloc-grid">
+                        <div id="perf-team-donut" class="perf-donut-slot"></div>
+                        <div class="perf-legend">${legendHTML}</div>
+                    </div>
+                </section>
+
+                <section class="perf-doc-block">
+                    <h2 class="perf-section-title">Effort trend</h2>
+                    <p class="perf-section-desc">${escapeHtml(brief.velocityDetail)}</p>
+                    <div class="perf-week-chart">${weekBars || '<p class="perf-muted">No dated activity in the current filter.</p>'}</div>
+                </section>
+
+                <section class="perf-doc-block">
+                    <h2 class="perf-section-title">Delivery milestones</h2>
+                    <p class="perf-section-desc">Page-level deliverables and where effort has concentrated — proxy for progress on scoped outcomes.</p>
+                    <div class="perf-milestone-list">${milestoneRows}</div>
+                </section>
+
+                <section class="perf-doc-block">
+                    <h2 class="perf-section-title">Workstream focus</h2>
+                    <p class="perf-section-desc">Top areas consuming time, translated from operational job codes into business-readable labels.</p>
+                    <div class="perf-job-chart">${focusBars || '<p class="perf-muted">No activity recorded.</p>'}</div>
+                </section>
+
+                <section class="perf-doc-block">
+                    <h2 class="perf-section-title">Key outcomes &amp; activities</h2>
+                    <p class="perf-section-desc">What the team is actually producing — integration, validation, client engagement, and defect work.</p>
+                    <div class="perf-outcome-list">${outcomeRows || '<p class="perf-muted">No work-item detail available.</p>'}</div>
+                </section>
+
+                <section class="perf-doc-block perf-doc-block--collapse">
+                    <button type="button" class="perf-detail-toggle" onclick="App.toggleTimelogDetail()">
+                        <span>Activity register · ${entries.length} records</span>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="${AppState.timelogDetailOpen ? 'perf-chevron--open' : ''}"><polyline points="6 9 12 15 18 9"/></svg>
+                    </button>
+                    <p class="perf-section-desc" style="margin-top:0">Full audit trail for finance and PMO — expand for line-level detail.</p>
+                    <div class="perf-detail-table-wrap" style="display:${AppState.timelogDetailOpen ? 'block' : 'none'}">
+                        <table class="perf-table perf-table--detail">
+                            <thead>
+                                <tr><th>Date</th><th>Owner</th><th>Function</th><th>Workstream</th><th>Activity</th><th>Effort</th><th>Status</th><th>Notes</th></tr>
+                            </thead>
+                            <tbody>${detailRows}</tbody>
+                        </table>
+                    </div>
+                </section>
+            </div>
+
+            <aside class="perf-layout-aside">
+                <section class="perf-doc-block">
+                    <h2 class="perf-section-title">Needs attention</h2>
+                    <p class="perf-section-desc">Issues that may affect delivery confidence, billing, or resourcing decisions.</p>
+                    <div class="perf-callout-list">${brief.attention.map(renderPerformanceAttentionItem).join('')}</div>
+                </section>
+
+                <section class="perf-doc-block">
+                    <h2 class="perf-section-title">Recommended decisions</h2>
+                    <p class="perf-section-desc">Suggested leadership actions based on current data signals.</p>
+                    <ul class="perf-decision-list">${decisionRows}</ul>
+                </section>
+
+                <section class="perf-doc-block">
+                    <h2 class="perf-section-title">Ownership</h2>
+                    <p class="perf-section-desc">Who is carrying the project — watch for over-concentration (${brief.concentrationPct}% top contributor).</p>
+                    <div class="perf-owner-list">${ownerRows}</div>
+                </section>
+
+                <section class="perf-doc-block">
+                    <h2 class="perf-section-title">Delivery dependencies</h2>
+                    <p class="perf-section-desc">Cross-functional handoffs implied by effort patterns.</p>
+                    <div class="perf-dep-list">${depRows}</div>
+                </section>
+
+                <section class="perf-doc-block perf-doc-block--muted">
+                    <h2 class="perf-section-title">Project snapshot</h2>
+                    <dl class="perf-snapshot">
+                        <div class="perf-snapshot-row"><dt>Client</dt><dd>${escapeHtml(brief.clientName || '—')}</dd></div>
+                        <div class="perf-snapshot-row"><dt>Reporting period</dt><dd>${escapeHtml(formatZohoDateRange(brief.minDate, brief.maxDate))}</dd></div>
+                        <div class="perf-snapshot-row"><dt>Engineering share</dt><dd>${brief.devPct}%</dd></div>
+                        <div class="perf-snapshot-row"><dt>QA share</dt><dd>${brief.qaPct}%</dd></div>
+                        <div class="perf-snapshot-row"><dt>Coordination overhead</dt><dd>${brief.overheadPct}%</dd></div>
+                        <div class="perf-snapshot-row"><dt>Data source</dt><dd>${escapeHtml(AppState.timelogMeta?.fileName || 'Zoho timelog')}</dd></div>
+                    </dl>
+                </section>
+            </aside>
+        </div>
+    </div>`;
+}
+
+
+/* ══════════════════════════════════════════════════════════
    HELP & DOCUMENTATION — SaaS Metric Explainer
    ══════════════════════════════════════════════════════════ */
 function renderHelp() {
@@ -4036,7 +4561,7 @@ function renderHelp() {
    SETTINGS — RBAC Management Board
 ══════════════════════════════════════════════════════════ */
 function renderSettings() {
-    const ALL_VIEWS   = ['overview','projects','pipeline','alerts','resources','timeline','analytics','intelligence'];
+    const ALL_VIEWS   = ['overview','projects','pipeline','alerts','resources','timeline','analytics','intelligence','performance'];
     const ALL_ACTIONS = ['export','refresh','switchWorkspace','theme'];
     const ALL_WS      = (CONFIG.WORKSPACES || []).map(w => w.id);
 
@@ -4095,7 +4620,7 @@ function renderSettings() {
     }).join('');
 
     // ── Roles Grid ───────────────────────────────────────
-    const viewLabels   = { overview:'Overview', projects:'Projects', pipeline:'Pipeline', alerts:'Alerts', resources:'Resources', timeline:'Timeline', analytics:'Analytics' };
+    const viewLabels   = { overview:'Overview', projects:'Projects', pipeline:'Pipeline', alerts:'Alerts', resources:'Resources', timeline:'Timeline', analytics:'Analytics', performance:'Performance' };
     const actionLabels = { export:'Export CSV', refresh:'Refresh Data', switchWorkspace:'Switch Workspace', theme:'Toggle Theme' };
 
     const rolesGrid = roleNames.map(roleName => {

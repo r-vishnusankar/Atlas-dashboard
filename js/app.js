@@ -45,10 +45,14 @@ const App = {
     },
 
     async _loadLiveProjects() {
+        const ws = AppState.activeWorkspace;
         const { projects, source } = await loadProjects(AppState.activeSheetUrl);
-        const enriched = (typeof featureOn === 'function' && featureOn('SIBLING_LIST_PROGRESS'))
-            ? await enrichProjectsWithSiblingMetrics(projects, AppState.activeSheetUrl)
-            : projects;
+        let enriched = projects;
+        if (ws.integrationType === 'clickup' && typeof featureOn === 'function' && featureOn('CLICKUP_SUBTASK_ENRICH')) {
+            enriched = await enrichClickUpWithSubtasks(projects, ws.clickupToken, ws);
+        } else if (typeof featureOn === 'function' && featureOn('SIBLING_LIST_PROGRESS')) {
+            enriched = await enrichProjectsWithSiblingMetrics(projects, AppState.activeSheetUrl);
+        }
         AppState.setProjects(enriched, source);
         this._lastLiveFetch = Date.now();
         const roadmapCount = enriched.filter(p => p.roadmap?.hasSibling).length;
@@ -58,6 +62,10 @@ const App = {
     async _bootDashboard() {
         this.showLoader();
         this.renderWorkspaceSwitcher();
+
+        if (isZohoWorkspace(AppState.activeWorkspace)) {
+            return this._bootZohoDashboard();
+        }
 
         try {
             const { projects, source, roadmapCount } = await this._loadLiveProjects();
@@ -76,7 +84,12 @@ const App = {
             } else if (projects.length === 0) {
                 this.toast('Sheet loaded but no project rows found. Check headers and data.', 'warning', 6000);
             } else {
-                const rm = roadmapCount ? ` · ${roadmapCount} delivery tabs` : '';
+                const ws = AppState.activeWorkspace;
+                const rm = roadmapCount
+                    ? (ws.integrationType === 'clickup'
+                        ? ` · ${roadmapCount} with subtasks`
+                        : ` · ${roadmapCount} delivery tabs`)
+                    : '';
                 this.toast(`${AppState.activeWorkspace.name} — ${projects.length} projects loaded${rm}`, 'success');
             }
 
@@ -91,6 +104,159 @@ const App = {
             this.renderCurrentView();
             this.toast('Could not load sheet. Check network and the workspace URL.', 'error', 8000);
         }
+    },
+
+    async _bootZohoDashboard() {
+        AppState.restoreTimelogsFromStorage();
+        AppState.setProjects([], 'zoho');
+
+        this.hideLoader();
+        this.updateSidebarMeta();
+        this.bindGlobalEvents();
+        this.applyRBACToUI();
+        this.applyWorkspaceNav();
+        this.updateZohoHeaderUI();
+
+        const hashView = (location.hash || '').replace(/^#/, '').split('/')[0];
+        if (!hashView || hashView === 'overview' || !Auth.canAccessView(hashView)) {
+            AppState.setView('performance');
+            if (!location.hash || location.hash === '#overview') {
+                history.replaceState(null, '', '#performance');
+            }
+        }
+
+        this.syncStateFromHash();
+        this.renderCurrentView();
+
+        if (AppState.timelogEntries.length) {
+            this.toast(`${AppState.activeWorkspace.name} — ${AppState.timelogEntries.length} timelog rows loaded`, 'success');
+        } else {
+            this.toast('Upload a Zoho timelog CSV or load the sample dataset.', 'info', 6000);
+        }
+    },
+
+    async _ingestZohoCsvText(text, fileName) {
+        const { entries, projects, clients } = parseZohoTimelog(text);
+        if (!entries.length) {
+            throw new Error('No timelog rows found in CSV.');
+        }
+        AppState.setTimelogData(entries, { fileName, projects, clients });
+        AppState.persistTimelogsToStorage();
+        AppState.setView('performance');
+        history.pushState(null, '', '#performance');
+        document.querySelectorAll('.nav-item').forEach(el => {
+            el.classList.toggle('active', el.dataset.view === 'performance');
+        });
+        this.updateSidebarMeta();
+        this.renderCurrentView();
+        this.toast(`Loaded ${entries.length} timelog rows${projects.length ? ` · ${projects.join(', ')}` : ''}`, 'success');
+    },
+
+    triggerZohoUpload() {
+        const input = document.getElementById('zoho-csv-input');
+        if (input) {
+            input.value = '';
+            input.click();
+        }
+    },
+
+    async handleZohoFile(file) {
+        if (!file) return;
+        try {
+            const text = await file.text();
+            await this._ingestZohoCsvText(text, file.name);
+        } catch (err) {
+            console.error('[Zoho] Upload error:', err);
+            this.toast(err.message || 'Failed to parse timelog CSV.', 'error', 6000);
+        }
+    },
+
+    handleZohoDrop(event) {
+        event.preventDefault();
+        const zone = document.getElementById('perf-dropzone');
+        if (zone) zone.classList.remove('perf-dropzone--over');
+        const file = event.dataTransfer?.files?.[0];
+        if (file) this.handleZohoFile(file);
+    },
+
+    async loadZohoSample() {
+        try {
+            const url = CONFIG.ZOHO_SAMPLE_CSV_URL || 'Timelogs.csv';
+            const res = await fetch(url);
+            if (!res.ok) throw new Error('Sample file not found.');
+            await this._ingestZohoCsvText(await res.text(), 'Timelogs.csv (sample)');
+        } catch (err) {
+            console.error('[Zoho] Sample load error:', err);
+            this.toast('Could not load sample timelog.', 'error');
+        }
+    },
+
+    setTimelogFilter(key, value) {
+        if (key === 'approvalStatus') {
+            AppState.setTimelogFilters({ approvalStatus: value || 'Approved' });
+        } else {
+            AppState.setTimelogFilters({ [key]: value || null });
+        }
+        this.renderCurrentView();
+    },
+
+    clearTimelogFilters() {
+        AppState.clearTimelogFilters();
+        if (AppState.timelogMeta?.projects?.length === 1) {
+            AppState.setTimelogFilters({ project: AppState.timelogMeta.projects[0] });
+        }
+        this.renderCurrentView();
+    },
+
+    toggleTimelogDetail() {
+        AppState.timelogDetailOpen = !AppState.timelogDetailOpen;
+        this.renderCurrentView();
+    },
+
+    exportTimelogCSV() {
+        const rows = AppState.filteredTimelogEntries;
+        if (!rows.length) {
+            this.toast('No timelog rows to export.', 'warning');
+            return;
+        }
+        exportTimelogEntriesCSV(rows);
+        this.toast(`Exported ${rows.length} timelog rows`, 'success');
+    },
+
+    _paintPerformanceCharts() {
+        const entries = AppState.filteredTimelogEntries;
+        if (!entries.length) return;
+        const teamAgg = aggregateByTeam(entries);
+        renderDonutChart('perf-team-donut', teamDonutData(teamAgg), 'Hours');
+    },
+
+    applyWorkspaceNav() {
+        const zoho = AppState.isZohoActive;
+        const zohoViews = ['performance', 'help', 'settings'];
+        document.querySelectorAll('.nav-item[data-view]').forEach(el => {
+            const view = el.dataset.view;
+            if (view === 'settings') return;
+            if (zoho && !zohoViews.includes(view)) {
+                el.style.display = 'none';
+            } else if (!zoho && view === 'performance') {
+                el.style.display = 'none';
+            }
+        });
+    },
+
+    updateZohoHeaderUI() {
+        const zoho = AppState.isZohoActive;
+        const searchBox = document.querySelector('.search-box');
+        const btnRefresh = document.getElementById('btn-refresh');
+        const btnUpload = document.getElementById('btn-zoho-upload');
+        const btnAvail = document.getElementById('btn-avail');
+        const title = document.getElementById('header-title');
+
+        if (searchBox) searchBox.style.display = zoho ? 'none' : '';
+        if (btnRefresh) btnRefresh.style.display = zoho ? 'none' : '';
+        if (btnAvail) btnAvail.style.display = zoho ? 'none' : '';
+        if (btnUpload) btnUpload.style.display = zoho ? '' : 'none';
+        if (title && zoho) title.textContent = 'Project Command Center';
     },
 
     /* ══════════════════════════════════════════
@@ -127,7 +293,7 @@ const App = {
     applyRBACToUI() {
         if (!CONFIG.RBAC_ENABLED) return;
 
-        const ALL_VIEWS = ['overview', 'projects', 'pipeline', 'alerts', 'resources', 'timeline', 'analytics', 'intelligence', 'help'];
+        const ALL_VIEWS = ['overview', 'projects', 'pipeline', 'alerts', 'resources', 'timeline', 'analytics', 'intelligence', 'performance', 'help'];
 
         // Sidebar nav items
         ALL_VIEWS.forEach(view => {
@@ -135,6 +301,9 @@ const App = {
             if (!el) return;
             el.style.display = Auth.canAccessView(view) ? '' : 'none';
         });
+
+        this.applyWorkspaceNav();
+        this.updateZohoHeaderUI();
 
         // Action buttons in header
         const btnExport  = document.getElementById('btn-export');
@@ -181,7 +350,11 @@ const App = {
         <div class="ws-menu" id="ws-menu" style="display:none">
             ${workspaces.map(w => {
                 const isActive = w.id === AppState.activeWorkspaceId;
-                const isConfigured = w.integrationType === 'clickup' ? (w.clickupListId && w.clickupListId !== '') : !!w.sheetUrl;
+                const isConfigured = w.integrationType === 'clickup'
+                    ? (w.clickupListId && w.clickupListId !== '')
+                    : w.integrationType === 'zoho_timelog'
+                    ? true
+                    : !!w.sheetUrl;
                 return `
                 <div class="ws-menu-item ${isActive ? 'ws-menu-item--active' : ''} ${!isConfigured ? 'ws-menu-item--unconfigured' : ''}"
                      onclick="App.switchWorkspace('${w.id}')"
@@ -228,7 +401,11 @@ const App = {
         const trigger = document.getElementById('ws-trigger');
         if (trigger) trigger.classList.remove('ws-trigger--open');
 
-        const isConfigured = ws.integrationType === 'clickup' ? (ws.clickupListId && ws.clickupListId !== '') : !!ws.sheetUrl;
+        const isConfigured = ws.integrationType === 'clickup'
+            ? (ws.clickupListId && ws.clickupListId !== '')
+            : ws.integrationType === 'zoho_timelog'
+            ? true
+            : !!ws.sheetUrl;
         if (!isConfigured) {
             this.toast(`${ws.name} is not set up yet. Add its ${ws.integrationType === 'clickup' ? 'clickupListId' : 'sheetUrl'} in Settings or config.js.`, 'warning', 5000);
             return;
@@ -238,15 +415,30 @@ const App = {
 
         AppState.setWorkspace(id);
         AppState.clearFilters();
-        AppState.setView('overview');
         AppState.detailProjectId = null;
-        location.hash = 'overview';
 
         // Re-render switcher to show new active
         this.renderWorkspaceSwitcher();
 
         // Stop old auto-refresh
         if (this.refreshTimer) clearInterval(this.refreshTimer);
+
+        if (isZohoWorkspace(ws)) {
+            AppState.restoreTimelogsFromStorage();
+            AppState.setProjects([], 'zoho');
+            AppState.setView('performance');
+            location.hash = 'performance';
+            this.hideLoader();
+            this.updateSidebarMeta();
+            this.applyRBACToUI();
+            this.renderCurrentView();
+            const n = AppState.timelogEntries.length;
+            this.toast(`Switched to ${ws.name}${n ? ` — ${n} timelog rows` : ' — upload a CSV to begin'}`, 'success');
+            return;
+        }
+
+        AppState.setView('overview');
+        location.hash = 'overview';
 
         this.showLoader();
         try {
@@ -255,6 +447,7 @@ const App = {
             this.updateSidebarMeta();
             this.updateNavAlertBadge();
             this.startAutoRefresh();
+            this.applyRBACToUI();
             this.renderCurrentView();
             const rm = roadmapCount ? ` · ${roadmapCount} delivery tabs` : '';
             this.toast(`Switched to ${ws.name} — ${projects.length} projects${rm}`, 'success');
@@ -281,7 +474,7 @@ const App = {
     },
 
     syncStateFromHash() {
-        const validViews = ['overview', 'projects', 'pipeline', 'alerts', 'resources', 'timeline', 'analytics', 'intelligence', 'help', 'settings'];
+        const validViews = ['overview', 'projects', 'pipeline', 'alerts', 'resources', 'timeline', 'analytics', 'intelligence', 'performance', 'help', 'settings'];
         const r = this.parseHash();
         if (r.projectId) {
             AppState.detailProjectId = r.projectId;
@@ -293,6 +486,9 @@ const App = {
             AppState.detailProjectId = null;
             let view = r.view;
             if (!validViews.includes(view)) view = 'overview';
+            if (AppState.isZohoActive && !['performance', 'help', 'settings'].includes(view)) {
+                view = Auth.canAccessView('performance') ? 'performance' : (validViews.find(v => Auth.canAccessView(v)) || 'help');
+            }
             // RBAC guard
             if (!Auth.canAccessView(view)) {
                 view = validViews.find(v => Auth.canAccessView(v)) || 'overview';
@@ -305,7 +501,7 @@ const App = {
     },
 
     navigate(view, pushHash = true) {
-        const validViews = ['overview', 'projects', 'pipeline', 'alerts', 'resources', 'timeline', 'analytics', 'intelligence', 'help', 'settings'];
+        const validViews = ['overview', 'projects', 'pipeline', 'alerts', 'resources', 'timeline', 'analytics', 'intelligence', 'performance', 'help', 'settings'];
         if (!validViews.includes(view)) view = 'overview';
         // Settings is admin-only
         if (view === 'settings' && Auth.currentUser?.role !== 'admin') view = 'overview';
@@ -378,7 +574,7 @@ const App = {
         root.querySelectorAll('.ov-ring-arc[data-offset]').forEach(el => {
             el.style.strokeDashoffset = el.dataset.offset;
         });
-        root.querySelectorAll('.ov-funnel-fill[data-fill], .workload-bar__fill[data-fill], .health-row__fill[data-fill], .progress-fill[data-fill]').forEach(el => {
+        root.querySelectorAll('.ov-funnel-fill[data-fill], .workload-bar__fill[data-fill], .health-row__fill[data-fill], .progress-fill[data-fill], .perf-job-fill[data-fill], .perf-owner-bar[data-fill], .perf-milestone-fill[data-fill]').forEach(el => {
             if (el.dataset.fill != null) el.style.width = el.dataset.fill + '%';
         });
     },
@@ -426,7 +622,7 @@ const App = {
             return;
         }
 
-        const sib = await loadProjectSiblingData(p, AppState.activeSheetUrl);
+        const sib = await loadProjectDetailData(p, AppState.activeSheetUrl, AppState.activeWorkspace);
         if (AppState.currentView !== 'project' || AppState.detailProjectId !== wantId) return;
 
         const scrollEl = document.querySelector('.content-area-scrollable');
@@ -460,6 +656,7 @@ const App = {
 
         AtlasDD.closeAll();
 
+        root.classList.toggle('content-area--performance', AppState.currentView === 'performance');
         this.setProjectPageLayoutClass(AppState.currentView === 'project');
 
         const aiOpts = this._aiMountOpts();
@@ -501,6 +698,10 @@ const App = {
                     requestAnimationFrame(() => AiInsights.mountIntelligence(aiOpts));
                 }
                 break;
+            case 'performance':
+                this._setViewContent(root, renderPerformance());
+                requestAnimationFrame(() => this._paintPerformanceCharts());
+                break;
             case 'help':
                 this._setViewContent(root, renderHelp());
                 break;
@@ -522,7 +723,7 @@ const App = {
                         if (r) this._setViewContent(r, renderProjectNotFound());
                         return;
                     }
-                    const sib = await loadProjectSiblingData(p, AppState.activeSheetUrl);
+                    const sib = await loadProjectDetailData(p, AppState.activeSheetUrl, AppState.activeWorkspace);
                     if (AppState.currentView !== 'project' || AppState.detailProjectId !== wantId) return;
                     const p2 = AppState.allProjects.find(x => x.id === wantId);
                     const r2 = document.getElementById('content-area');
@@ -619,6 +820,84 @@ const App = {
     ══════════════════════════════════════════ */
     handleCardClick(projectId) {
         this.openProjectDetailPage(projectId);
+    },
+
+    /* ══════════════════════════════════════════
+       ANALYTICS DRILL-DOWN — click a chart element to see the underlying pages
+    ══════════════════════════════════════════ */
+    analyticsDrill(type, value, extra) {
+        if (typeof getAnalyticsDrillUnits !== 'function') return;
+        const { title, subtitle, units } = getAnalyticsDrillUnits(type, value, extra);
+        this.openAnalyticsModal(title, subtitle, units);
+    },
+
+    openAnalyticsModal(title, subtitle, units) {
+        this.closeAnalyticsModal();
+        const esc = (typeof escapeHtml === 'function') ? escapeHtml : (s => String(s == null ? '' : s));
+        const today = new Date(); today.setHours(0, 0, 0, 0);
+        const fmt = (s) => {
+            if (!s) return '—';
+            const d = parseSmartDate(s);
+            return isNaN(d.getTime()) ? '—' : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+        };
+
+        const rows = (units && units.length) ? units.map(u => {
+            const start = u.start_date ? parseSmartDate(u.start_date) : null;
+            const ageDays = (start && !isNaN(start.getTime()))
+                ? Math.max(0, Math.round((today - start) / 86400000)) : null;
+            const stageKey = String(u.stage || '').toLowerCase().replace(/[^a-z]/g, '');
+            const stageLabel = u.rawStage || u.stage || '—';
+            const dev = (typeof splitAssigneeNames === 'function' ? splitAssigneeNames(u.developer) : [])
+                .filter(n => typeof isValidResourceName !== 'function' || isValidResourceName(n));
+            return `
+            <div class="an-drill-row" onclick="App.closeAnalyticsModal();App.openProjectDetailPage('${esc(u.id)}')" title="Open ${esc(u.projectName || u.name)}">
+                <div class="an-drill-main">
+                    <div class="an-drill-proj">${esc(u.projectName || u.name || '—')}</div>
+                    ${u.page ? `<div class="an-drill-page">${esc(u.page)}</div>` : ''}
+                    ${dev.length ? `<div class="an-drill-dev">${esc(dev.join(', '))}</div>` : ''}
+                </div>
+                <span class="an-drill-chip an-drill-chip--${stageKey}" title="Normalized: ${esc(u.stage || '—')}">${esc(stageLabel)}</span>
+                <div class="an-drill-metric">
+                    ${u.drillMetric
+                        ? `<span class="an-drill-pct">${esc(u.drillMetric)}</span>`
+                        : `<span class="an-drill-pct">${u.progress != null ? u.progress + '%' : '—'}</span>${ageDays != null ? `<span class="an-drill-age">${ageDays}d old</span>` : ''}`}
+                </div>
+                <div class="an-drill-dates">
+                    <span>Rel: ${fmt(u.release_date)}</span>
+                    <span>Live: ${fmt(u.actual_live_date)}</span>
+                </div>
+                <span class="an-drill-arrow">→</span>
+            </div>`;
+        }).join('') : '<div class="an-drill-empty">No matching pages found.</div>';
+
+        const overlay = document.createElement('div');
+        overlay.className = 'an-drill-overlay';
+        overlay.id = 'an-drill-overlay';
+        overlay.innerHTML = `
+        <div class="an-drill-modal" role="dialog" aria-modal="true" aria-label="${esc(title)}">
+            <div class="an-drill-head">
+                <div class="an-drill-head-text">
+                    <div class="an-drill-title">${esc(title)}</div>
+                    ${subtitle ? `<div class="an-drill-sub">${esc(subtitle)}</div>` : ''}
+                </div>
+                <button class="an-drill-close" onclick="App.closeAnalyticsModal()" aria-label="Close">✕</button>
+            </div>
+            <div class="an-drill-list">${rows}</div>
+        </div>`;
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) this.closeAnalyticsModal(); });
+        document.body.appendChild(overlay);
+
+        this._drillEscHandler = (e) => { if (e.key === 'Escape') this.closeAnalyticsModal(); };
+        document.addEventListener('keydown', this._drillEscHandler);
+    },
+
+    closeAnalyticsModal() {
+        const el = document.getElementById('an-drill-overlay');
+        if (el) el.remove();
+        if (this._drillEscHandler) {
+            document.removeEventListener('keydown', this._drillEscHandler);
+            this._drillEscHandler = null;
+        }
     },
 
     copyProjectLink(projectId) {
@@ -930,6 +1209,10 @@ const App = {
     startAutoRefresh() {
         if (this.refreshTimer) clearInterval(this.refreshTimer);
         if (this._metaTimer)   clearInterval(this._metaTimer);
+        if (AppState.isZohoActive) {
+            this.updateLastUpdated();
+            return;
+        }
         this.refreshTimer = setInterval(() => this.refresh(true), CONFIG.REFRESH_INTERVAL_MS);
         this._metaTimer   = setInterval(() => this.updateLastUpdated(), 30_000);
         this.updateLastUpdated();
@@ -960,6 +1243,17 @@ const App = {
         };
         
         // Basic Checks
+        if (AppState.isZohoActive) {
+            const n = AppState.timelogEntries.length;
+            const approved = AppState.filteredTimelogEntries.length;
+            set('count-performance', approved || n);
+            const syncText = document.getElementById('sync-text');
+            const syncDot  = document.getElementById('sync-dot');
+            if (syncText) syncText.textContent = n ? 'Timelog loaded' : 'Awaiting upload';
+            if (syncDot) syncDot.style.background = n ? 'var(--status-success)' : 'var(--status-warning)';
+            return;
+        }
+
         if (!AppState.allProjects) return;
 
         set('count-overview', AppState.allProjects.length);
@@ -1012,6 +1306,7 @@ const App = {
         // Refetch published sheet when user returns to this tab (debounced)
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState !== 'visible') return;
+            if (AppState.isZohoActive) return;
             if (!AppState.activeSheetUrl) return;
             const minGap = 5000;
             if (Date.now() - this._lastLiveFetch < minGap) return;
@@ -1065,10 +1360,25 @@ const App = {
         const btnExport = document.getElementById('btn-export');
         if (btnExport) {
             btnExport.addEventListener('click', () => {
+                if (AppState.isZohoActive && AppState.currentView === 'performance') {
+                    this.exportTimelogCSV();
+                    return;
+                }
                 exportToCSV(AppState.allProjects);
                 this.toast(`Exported ${AppState.allProjects.length} projects to CSV`, 'success');
             });
         }
+
+        const zohoInput = document.getElementById('zoho-csv-input');
+        if (zohoInput) {
+            zohoInput.addEventListener('change', e => {
+                const file = e.target.files?.[0];
+                if (file) this.handleZohoFile(file);
+            });
+        }
+
+        const btnZohoUpload = document.getElementById('btn-zoho-upload');
+        if (btnZohoUpload) btnZohoUpload.addEventListener('click', () => this.triggerZohoUpload());
 
         // Mobile hamburger
         const hamburgerBtn = document.getElementById('hamburger-btn');

@@ -470,6 +470,13 @@
   box-sizing: border-box;
 }
 
+.content-area--performance {
+  max-width: none;
+  width: 100%;
+  margin: 0;
+  box-sizing: border-box;
+}
+
 /* ── Split Layout classes ── */
 .layout-split {
   display: flex;
