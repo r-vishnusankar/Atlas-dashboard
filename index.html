@@ -6,11 +6,11 @@
     <title>Atlas — Project Mission Control</title>
     <link rel="stylesheet" href="css/design-system.css?v=10">
     <link rel="stylesheet" href="css/animations.css?v=10">
-    <link rel="stylesheet" href="css/layout.css?v=15">
+    <link rel="stylesheet" href="css/layout.css?v=16">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="css/components.css?v=47">
+    <link rel="stylesheet" href="css/components.css?v=55">
 </head>
 <body>
 
@@ -218,6 +218,13 @@
                 </div>
                 <span class="nav-count" id="count-intelligence">0</span>
             </a>
+            <a class="nav-item" data-view="performance" href="#performance" style="display:none;">
+                <div style="display:flex; align-items:center; gap:16px; flex:1">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v12M6 12h12"/></svg>
+                    Performance
+                </div>
+                <span class="nav-count" id="count-performance">0</span>
+            </a>
 
             <a class="nav-item" data-view="help" href="#help">
                 <div style="display:flex; align-items:center; gap:16px; flex:1">
@@ -281,6 +288,11 @@
                     <div id="res-avail-popover" class="res-avail-popover" style="display:none;"></div>
                 </div>
 
+                <button class="icon-btn" id="btn-zoho-upload" title="Upload Zoho Timelog" style="display:none;">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                </button>
+                <input type="file" id="zoho-csv-input" accept=".csv,text/csv" style="display:none" aria-hidden="true">
+
                 <button class="icon-btn" id="btn-export" title="Export CSV"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></button>
                 <button class="icon-btn" id="btn-refresh" title="Refresh Live Data"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></button>
                 
@@ -297,13 +309,14 @@
 
 </div>
 
-    <script src="js/config.js?v=21"></script>
+    <script src="js/config.js?v=22"></script>
     <script src="js/auth.js?v=14"></script>
-    <script src="js/data.js?v=19"></script>
-    <script src="js/state.js?v=17"></script>
+    <script src="js/data.js?v=32"></script>
+    <script src="js/zoho-data.js?v=2"></script>
+    <script src="js/state.js?v=20"></script>
     <script src="js/charts.js?v=9"></script>
     <script src="js/ai-insights.js?v=3"></script>
-    <script src="js/components.js?v=45"></script>
-    <script src="js/app.js?v=32"></script>
+    <script src="js/components.js?v=56"></script>
+    <script src="js/app.js?v=38"></script>
 </body>
 </html>

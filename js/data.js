@@ -90,9 +90,32 @@ function col(cols, fieldMap, leg, key) {
 /* ──────────────────────────────────────────
    CSV PARSER
 ────────────────────────────────────────── */
+
+/** Split CSV text into logical lines, respecting quoted fields that span newlines (Alt+Enter in Sheets). */
+function splitCSVLines(text) {
+    const lines = [];
+    let current = '';
+    let inQuotes = false;
+    for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+        if (ch === '"') {
+            inQuotes = !inQuotes;
+            current += ch;
+        } else if ((ch === '\n' || ch === '\r') && !inQuotes) {
+            if (ch === '\r' && text[i + 1] === '\n') i++;
+            if (current.trim()) lines.push(current);
+            current = '';
+        } else {
+            current += ch;
+        }
+    }
+    if (current.trim()) lines.push(current);
+    return lines;
+}
+
 function parseCSV(csvText) {
     const text = String(csvText).replace(/^\uFEFF/, '').trim();
-    const lines = text.split(/\n/).filter(ln => String(ln).trim() !== '');
+    const lines = splitCSVLines(text);
     if (lines.length < 2) return [];
 
     const fieldMap0 = buildFieldIndexMap(lines[0]);
@@ -214,6 +237,11 @@ function normalizeStage(s) {
     return 'Backlog';
 }
 
+/** Split a multi-name assignee field into individual trimmed names. */
+function splitAssigneeNames(raw) {
+    return String(raw || '').split(/[,;\n]+/).map(s => s.trim()).filter(Boolean);
+}
+
 /** Names that must not appear in the resource / availability map */
 function isValidResourceName(name) {
     const n = String(name || '').trim();
@@ -229,7 +257,24 @@ function getResourceAvailability(person, today) {
     const activeAssignments = (person.assignments || []).filter(a => !a.completed);
 
     if (!person.freeFrom) {
-        if (hasActive) return { label: 'Release date TBD', chipClass: 'res-free-chip--tbd', popClass: 'res-pop-chip--tbd', status: 'unknown' };
+        if (hasActive) {
+            // Distinguish "deadline passed but not Live" (overdue, still engaged) from
+            // simply "no release date set yet" (unknown).
+            const allDated = activeAssignments.length
+                && activeAssignments.every(a => a.end && !isNaN(a.end.getTime()));
+            if (featureOn('RESOURCE_FREE_FROM_FIX') && allDated) {
+                const maxEndMs = Math.max(...activeAssignments.map(a => startOfDay(a.end).getTime()));
+                if (maxEndMs < t.getTime()) {
+                    return {
+                        label: `Overdue · ${person.activeCount} project${person.activeCount !== 1 ? 's' : ''}`,
+                        chipClass: 'res-free-chip--tbd',
+                        popClass: 'res-pop-chip--tbd',
+                        status: 'overdue',
+                    };
+                }
+            }
+            return { label: 'Release date TBD', chipClass: 'res-free-chip--tbd', popClass: 'res-pop-chip--tbd', status: 'unknown' };
+        }
         if (person.assignments && person.assignments.length) {
             return { label: 'Available now', chipClass: 'res-free-chip--now', popClass: 'res-pop-chip--now', status: 'now' };
         }
@@ -239,21 +284,6 @@ function getResourceAvailability(person, today) {
     const ff = startOfDay(person.freeFrom);
     if (!hasActive) {
         return { label: 'Available now', chipClass: 'res-free-chip--now', popClass: 'res-pop-chip--now', status: 'now' };
-    }
-
-    if (featureOn('RESOURCE_FREE_FROM_FIX') && activeAssignments.length) {
-        const allDated = activeAssignments.every(a => a.end && !isNaN(a.end.getTime()));
-        const maxEndMs = allDated
-            ? Math.max(...activeAssignments.map(a => startOfDay(a.end).getTime()))
-            : null;
-        if (maxEndMs != null && maxEndMs < t.getTime()) {
-            return {
-                label: `Free now · ${person.activeCount} overdue`,
-                chipClass: 'res-free-chip--now',
-                popClass: 'res-pop-chip--now',
-                status: 'now_overdue',
-            };
-        }
     }
 
     if (ff <= t) {
@@ -441,9 +471,12 @@ function clickUpTaskIsDone(task) {
 }
 
 /** Pre-map ClickUp list statuses (TO DO / IN PROGRESS / COMPLETE) before sheet-style normalizeStage. */
-function clickUpStageFromStatus(statusStr, isDone) {
+function clickUpStageFromStatus(statusStr, isDone, ws) {
     if (isDone) return 'Live';
     const low = String(statusStr || '').trim().toLowerCase();
+    const workspace = ws || (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
+    const customMap = workspace.clickupStatusMap;
+    if (customMap && customMap[low]) return customMap[low];
     const map = {
         'to do': 'Backlog',
         'todo': 'Backlog',
@@ -458,6 +491,88 @@ function clickUpStageFromStatus(statusStr, isDone) {
     };
     if (map[low]) return map[low];
     return normalizeStage(statusStr || 'Planning');
+}
+
+/** Map status to workspace clickupStageFlow step (heatmap) or normalized funnel bucket. */
+function clickUpFlowStage(statusStr, isDone, ws) {
+    if (isDone) return 'Live';
+    const low = String(statusStr || '').trim().toLowerCase();
+    const flow = getWorkspaceStageFlow(ws);
+    if (isClickUpWorkspace(ws) && flow.length) {
+        const flowMap = {
+            'brief': 'Brief', 'planning': 'Brief', 'to do': 'Brief', 'todo': 'Brief', 'open': 'Brief',
+            'content': 'Content', 'in progress': 'Content',
+            'design': 'Design',
+            'review': 'Review', 'in review': 'Review', 'qa': 'Review',
+            'publish': 'Publish', 'staging': 'Publish', 'release': 'Publish',
+        };
+        if (flowMap[low]) return flowMap[low];
+        const workspace = ws || (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
+        if (workspace.clickupStatusMap && workspace.clickupStatusMap[low]) {
+            const norm = workspace.clickupStatusMap[low];
+            const normToFlow = {
+                Planning: 'Brief', Development: 'Content', QA: 'Review', Release: 'Publish', Live: 'Live', Backlog: 'Brief',
+            };
+            if (normToFlow[norm]) return normToFlow[norm];
+        }
+    }
+    return clickUpStageFromStatus(statusStr, isDone, ws);
+}
+
+function parseClickUpTimestamp(ts) {
+    if (!ts) return '';
+    const d = new Date(parseInt(ts, 10));
+    return isNaN(d.getTime()) ? '' : d.toISOString().split('T')[0];
+}
+
+/** Progress from checklist items when Progress custom field is empty. */
+function clickUpChecklistProgress(checklists) {
+    if (!Array.isArray(checklists) || !checklists.length) return null;
+    let total = 0;
+    let done = 0;
+    checklists.forEach(cl => {
+        (cl.items || []).forEach(item => {
+            total += 1;
+            if (item.resolved) done += 1;
+        });
+    });
+    return total ? Math.round((done / total) * 100) : null;
+}
+
+function clickUpAssigneeName(assignees, index) {
+    const a = assignees && assignees[index];
+    if (!a) return '';
+    return String(a.username || a.email || a.name || '').trim();
+}
+
+function isClickUpWorkspace(ws) {
+    return !!(ws && ws.integrationType === 'clickup');
+}
+
+/** Streak uses STAGE_FLOW; ClickUp workspaces may define clickupStageFlow. */
+function getWorkspaceStageFlow(ws) {
+    const w = ws || (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
+    if (isClickUpWorkspace(w) && Array.isArray(w.clickupStageFlow) && w.clickupStageFlow.length) {
+        return w.clickupStageFlow;
+    }
+    return typeof STAGE_FLOW !== 'undefined' ? STAGE_FLOW : [];
+}
+
+/** Label for analytics/funnel units: pages (Sheets) vs tasks/deliverables (ClickUp). */
+function deliveryUnitWord(plural) {
+    const ws = (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
+    if (!isClickUpWorkspace(ws)) return plural ? 'pages' : 'page';
+    const projects = (typeof AppState !== 'undefined' && AppState.allProjects) || [];
+    const hasDeliverables = projects.some(p =>
+        p.roadmap?.source === 'clickup' && Array.isArray(p.roadmap?.pages) && p.roadmap.pages.length
+    );
+    if (hasDeliverables) return plural ? 'deliverables' : 'deliverable';
+    return plural ? 'tasks' : 'task';
+}
+
+function pluralDeliveryUnits(n) {
+    const w = deliveryUnitWord(n !== 1);
+    return `${n} ${w}`;
 }
 
 function clickUpMaxTasks() {
@@ -559,7 +674,8 @@ async function loadClickUpTasks(listId, token) {
     }
 }
 
-function mapClickUpTaskToProject(task) {
+function mapClickUpTaskToProject(task, ws) {
+    const workspace = ws || (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
     const id = task.id || `CU-${Math.random().toString(36).substr(2, 9)}`;
     const name = task.name || 'Unnamed ClickUp Task';
     const useListClient = featureOn('CLICKUP_LIST_AS_CLIENT');
@@ -567,21 +683,16 @@ function mapClickUpTaskToProject(task) {
     const isDone = useDoneStatus && clickUpTaskIsDone(task);
     const listLabel = clickUpListName(task);
 
-    // Parse timestamps (ClickUp timestamps are Unix millisecond strings)
-    const parseTs = (ts) => {
-        if (!ts) return '';
-        const d = new Date(parseInt(ts, 10));
-        return isNaN(d.getTime()) ? '' : d.toISOString().split('T')[0];
-    };
+    const parseTs = parseClickUpTimestamp;
 
     const start_date = parseTs(task.start_date);
     const release_date = parseTs(task.due_date);
     const statusRaw = task.status?.status || 'Planning';
 
     const stage = useDoneStatus
-        ? clickUpStageFromStatus(statusRaw, isDone)
+        ? clickUpStageFromStatus(statusRaw, isDone, workspace)
         : normalizeStage(statusRaw);
-    const status = isDone
+    let status = isDone
         ? 'on_track'
         : normalizeStatus(statusRaw || 'on_track');
     
@@ -597,19 +708,14 @@ function mapClickUpTaskToProject(task) {
     let actual_live_date = '';
     let notes = task.description || '';
     let tags = (task.tags || []).map(t => t.name || t);
+    let customHealth = '';
 
-    // Map Assignees
     if (task.assignees && task.assignees.length > 0) {
-        owner = task.assignees[0].username || task.assignees[0].email || 'Unassigned';
-        if (task.assignees.length > 1) {
-            developer = task.assignees[1].username || task.assignees[1].email || 'Unassigned';
-        }
-        if (task.assignees.length > 2) {
-            qa_engineer = task.assignees[2].username || task.assignees[2].email || 'Unassigned';
-        }
+        owner = clickUpAssigneeName(task.assignees, 0) || 'Unassigned';
+        developer = clickUpAssigneeName(task.assignees, 1) || 'Unassigned';
+        qa_engineer = clickUpAssigneeName(task.assignees, 2) || 'Unassigned';
     }
 
-    // Map Custom Fields
     if (task.custom_fields && Array.isArray(task.custom_fields)) {
         task.custom_fields.forEach(f => {
             const fname = (f.name || '').toLowerCase().replace(/[\s_-]+/g, '');
@@ -627,24 +733,32 @@ function mapClickUpTaskToProject(task) {
             } else if (fname === 'client' || fname === 'pagename') {
                 if (val) client = String(val);
             } else if (fname === 'progress' || fname === 'percent' || fname === 'progress%') {
-                progress = parseInt(val) || 0;
+                progress = parseInt(val, 10) || 0;
             } else if (fname === 'priority') {
                 priority = String(val);
             } else if (fname === 'totalpages') {
-                total_pages = parseInt(val) || 0;
+                total_pages = parseInt(val, 10) || 0;
             } else if (fname === 'completedpages') {
-                completed_pages = parseInt(val) || 0;
+                completed_pages = parseInt(val, 10) || 0;
             } else if (fname === 'actuallivedate' || fname === 'golivedate') {
                 actual_live_date = String(val);
+            } else if (fname === 'status' || fname === 'health') {
+                customHealth = String(val);
             }
         });
     }
 
-    // Progress inference fallback
+    if (customHealth && !isDone) {
+        status = normalizeStatus(customHealth);
+    }
+
+    const clPct = clickUpChecklistProgress(task.checklists);
     if (progress === 0) {
         if (stage === 'Live' || isDone) progress = 100;
         else if (total_pages > 0) {
             progress = Math.round((completed_pages / total_pages) * 100);
+        } else if (clPct != null) {
+            progress = clPct;
         }
     } else if (isDone && progress < 100) {
         progress = 100;
@@ -684,9 +798,16 @@ function mapClickUpTaskToProject(task) {
         roadmap: {
             hasSibling: false
         },
+        clickupMeta: {
+            url: task.url || '',
+            checklists: task.checklists || [],
+            subtasks: task.subtasks || [],
+            customFields: task.custom_fields || [],
+        },
     };
     if (useDoneStatus) out.clickupComplete = !!isDone;
     if (useListClient && listLabel) out.clickupList = listLabel;
+    out._clickupRaw = task;
     return out;
 }
 
@@ -707,7 +828,41 @@ function getClickUpMockData() {
             due_date: getOffsetDateStr(12),
             description: 'Audit backlink profile, perform keyword gap analysis, and optimize top meta tags.',
             assignees: [{ username: 'Alice Johnson' }, { username: 'Bob Smith' }],
-            tags: ['SEO', 'Marketing'],
+            tags: [{ name: 'SEO' }, { name: 'Marketing' }],
+            checklists: [{
+                name: 'SEO checklist',
+                items: [
+                    { name: 'Sitemap submitted', resolved: true },
+                    { name: 'Robots.txt updated', resolved: true },
+                    { name: 'Core Web Vitals pass', resolved: false },
+                ],
+            }],
+            subtasks: [
+                {
+                    id: 'cu-seo-sub-1',
+                    name: 'Keyword gap analysis',
+                    status: { status: 'complete', type: 'closed' },
+                    date_closed: getOffsetDateStr(-8),
+                    start_date: getOffsetDateStr(-18),
+                    due_date: getOffsetDateStr(-8),
+                    assignees: [{ username: 'Bob Smith' }],
+                },
+                {
+                    id: 'cu-seo-sub-2',
+                    name: 'Meta tag optimization',
+                    status: { status: 'in progress', type: 'custom' },
+                    start_date: getOffsetDateStr(-10),
+                    due_date: getOffsetDateStr(5),
+                    assignees: [{ username: 'Alice Johnson' }],
+                },
+                {
+                    id: 'cu-seo-sub-3',
+                    name: 'Backlink audit report',
+                    status: { status: 'to do', type: 'open' },
+                    due_date: getOffsetDateStr(12),
+                    assignees: [{ username: 'Bob Smith' }],
+                },
+            ],
             custom_fields: [
                 { name: 'Client', value: 'Google Search' },
                 { name: 'BA', value: 'Charlie Lee' },
@@ -786,7 +941,7 @@ async function loadProjects(sheetUrl) {
     if (ws.integrationType === 'clickup') {
         console.log(`[Atlas] Loading ClickUp workspace: ${ws.name}`);
         const tasks = await loadClickUpTasks(ws.clickupListId, ws.clickupToken);
-        const projects = tasks.map(mapClickUpTaskToProject);
+        const projects = tasks.map(t => mapClickUpTaskToProject(t, ws));
         console.log(`[Atlas] Loaded ${projects.length} ClickUp tasks as projects ✓`);
         return { projects, source: 'clickup' };
     }
@@ -840,7 +995,7 @@ function buildDetailSheetCsvUrl(gid, sheetBaseUrl) {
 function parseGenericTableCSV(csvText) {
     const text = String(csvText).replace(/^\uFEFF/, '').trim();
     if (!text) return { headers: [], rows: [] };
-    const lines = text.split('\n').filter(ln => String(ln).trim() !== '');
+    const lines = splitCSVLines(text);
     if (lines.length === 0) return { headers: [], rows: [] };
     const headers = parseCSVLine(lines[0]);
     const rows = [];
@@ -901,6 +1056,19 @@ function findSiblingCol(hlist, aliases) {
     return -1;
 }
 
+/** Milestone columns live after Planning — avoids matching page-level Start_date / start_date. */
+function findSiblingMilestoneCol(hlist, aliases) {
+    const planIdx = findSiblingCol(hlist, ['planning', 'planning_date']);
+    const startAt = planIdx >= 0 ? planIdx : 0;
+    for (const fk of aliases) {
+        const want = normalizeHeaderForMatch(fk.replace(/\s+/g, '_'));
+        for (let i = startAt; i < hlist.length; i++) {
+            if (normalizeHeaderForMatch(hlist[i]) === want) return i;
+        }
+    }
+    return -1;
+}
+
 function roadmapCell(row, idx) {
     if (idx < 0 || !row) return '';
     const v = row[idx];
@@ -951,6 +1119,526 @@ function computeRoadmapMetrics(p, hlist, rows) {
     return { ti, idxStage, idxStatus, idxProgress, idxOwner, total, live, inprog, pending, avgPct, funnelStage };
 }
 
+/**
+ * Per-page people assignments from sibling tab rows (Developer / QA / Page owner columns).
+ * Each entry: { person, role, page, stage, status, start, end, completed } — dates as raw strings.
+ */
+function computeSiblingAssignments(hlist, rows) {
+    const ti = hlist.length ? findSiblingTitleColumnIndex(hlist) : 0;
+    const idxStage   = findSiblingCol(hlist, ['stage', 'phase']);
+    const idxStatus  = findSiblingCol(hlist, ['status', 'health']);
+    const idxStart   = findSiblingCol(hlist, ['start_date', 'project_start_date']);
+    const idxRelease = findSiblingCol(hlist, ['release_date', 'planned_release_date', 'release', 'target_date']);
+    const idxLive    = findSiblingCol(hlist, ['actual_live_date', 'live_date', 'go_live', 'live']);
+    const roleCols = [
+        { role: 'Developer',  idx: findSiblingCol(hlist, ['developer', 'dev']) },
+        { role: 'QA',         idx: findSiblingCol(hlist, ['qa', 'qa_engineer', 'q_a']) },
+        { role: 'Page owner', idx: findSiblingCol(hlist, ['page_owner']) },
+    ].filter(rc => rc.idx >= 0);
+    if (!roleCols.length) return [];
+
+    const out = [];
+    rows.forEach(row => {
+        if (!row.some(cell => cell && String(cell).trim())) return;
+        const rawStage = idxStage >= 0 ? roadmapCell(row, idxStage) : '';
+        const stage = normalizeStage(rawStage);
+        const low = rawStage.toLowerCase();
+        const rowDone = stage === 'Live' || low.includes('live') || low.includes('done') || low.includes('completed');
+        const base = {
+            page:   roadmapCell(row, ti),
+            stage,
+            status: idxStatus >= 0 ? roadmapCell(row, idxStatus) : '',
+            start:  idxStart >= 0 ? roadmapCell(row, idxStart) : '',
+            end:    rowDone
+                ? (roadmapCell(row, idxLive) || roadmapCell(row, idxRelease))
+                : roadmapCell(row, idxRelease),
+            completed: rowDone,
+        };
+        roleCols.forEach(rc => {
+            const v = roadmapCell(row, rc.idx);
+            if (!isValidResourceName(v)) return;
+            out.push({ person: v, role: rc.role, ...base });
+        });
+    });
+    return out;
+}
+
+/**
+ * Ordered delivery pipeline. Each sibling row has a date column per milestone marking
+ * when the page *entered* that stage. Time spent in a stage = (next milestone date − this
+ * milestone date). Aliases cover the two sheet schemas seen in the wild:
+ *   - newer: Planning, Start, Story_Req, UI_Dev, Streak_Dev, Streak_QA, Live
+ *   - older: Planning_Date, Content Start Date, Story_Req_Date, UI_Start_Date,
+ *            Dev_Start_Date, QA_Start_Date, Actual Live Date
+ */
+const STAGE_FLOW = [
+    { stage: 'Planning',   aliases: ['planning', 'planning_date'] },
+    { stage: 'Content',    aliases: ['start', 'start_date', 'content_start_date', 'content_start'] },
+    { stage: 'Story Req',  aliases: ['story_req', 'story_req_date'] },
+    { stage: 'UI Dev',     aliases: ['ui_dev', 'ui_start_date', 'ui_start'] },
+    { stage: 'Streak Dev', aliases: ['streak_dev', 'dev_start_date', 'dev_start'] },
+    { stage: 'Streak QA',  aliases: ['streak_qa', 'qa_start_date', 'qa_start'] },
+    { stage: 'Live',       aliases: ['live', 'actual_live_date', 'go_live', 'live_date'] },
+];
+
+/**
+ * Planned delivery expectation per stage: days between consecutive milestone dates on the
+ * sibling row (each column = planned date the page enters that stage). Does NOT use today.
+ */
+function computeRowStageExpectations(row, flowCols, yearHint) {
+    const dates = {};
+    flowCols.forEach(fc => {
+        if (fc.idx < 0) return;
+        const raw = roadmapCell(row, fc.idx);
+        if (!raw) return;
+        const ms = parseMilestoneMs(raw, yearHint);
+        if (!isNaN(ms)) dates[fc.stage] = ms;
+    });
+    const expectations = [];
+    for (let i = 0; i < flowCols.length - 1; i++) {
+        const stage = flowCols[i].stage;
+        const next = flowCols[i + 1].stage;
+        const ms0 = dates[stage];
+        const ms1 = dates[next];
+        if (ms0 == null || ms1 == null) continue;
+        const days = Math.round((ms1 - ms0) / 86400000);
+        if (days >= 0) expectations.push({ stage, days });
+    }
+    let pipelineExpectedDays = null;
+    if (dates['Planning'] != null && dates['Live'] != null) {
+        const total = Math.round((dates['Live'] - dates['Planning']) / 86400000);
+        if (total >= 0) pipelineExpectedDays = total;
+    }
+    return { expectations, reachedLive: dates['Live'] != null, pipelineExpectedDays };
+}
+
+/** Max sane duration for one stage interval / full pipeline (guards bad sheet dates). */
+const MAX_STAGE_DAYS = 180;
+const MAX_PIPELINE_DAYS = 730;
+
+const MONTH_PARSE = { jan:0, feb:1, mar:2, apr:3, may:4, jun:5, jul:6, aug:7, sep:8, oct:9, nov:10, dec:11 };
+
+function milestoneYearHint(row, idxRelease, idxStart, idxLive) {
+    for (const idx of [idxLive, idxRelease, idxStart]) {
+        if (idx < 0) continue;
+        const d = parseSmartDate(roadmapCell(row, idx));
+        if (!isNaN(d.getTime()) && d.getFullYear() >= 2020) return d.getFullYear();
+    }
+    return new Date().getFullYear();
+}
+
+/** Parse a milestone cell; fills missing year from release/live/start on the same row. */
+function parseMilestoneMs(raw, yearHint) {
+    const t = String(raw || '').trim();
+    if (!t || isPlaceholderDate(t)) return NaN;
+    const partial = t.match(/^(\d{1,2})-([A-Za-z]{3,9})$/i);
+    if (partial && yearHint) {
+        const mo = MONTH_PARSE[partial[2].toLowerCase().slice(0, 3)];
+        if (mo !== undefined) {
+            return startOfDay(new Date(yearHint, mo, parseInt(partial[1], 10))).getTime();
+        }
+    }
+    const d = parseSmartDate(t);
+    return isNaN(d.getTime()) ? NaN : startOfDay(d).getTime();
+}
+
+function pushStageDuration(durations, stage, days, ongoing) {
+    if (days < 0 || days > MAX_STAGE_DAYS) return;
+    durations.push({ stage, days, ongoing: !!ongoing });
+}
+
+/**
+ * Map sibling row Stage column value to a STAGE_FLOW pipeline step (for duration logic).
+ */
+function mapToFlowStage(rawStage) {
+    const low = String(rawStage || '').trim().toLowerCase().replace(/_/g, ' ');
+    if (!low || low === 'to do' || low === 'todo' || low.includes('backlog') || low.includes('not started')) return 'Planning';
+    if (/\blive\b|done|completed/.test(low)) return 'Live';
+    if (/streak\s*[-–]?\s*qa|\bqa\b|testing/.test(low)) return 'Streak QA';
+    if (/streak\s*[-–]?\s*dev|\bdev\b|development/.test(low)) return 'Streak Dev';
+    if (/ui\s*[-–]?\s*dev/.test(low)) return 'UI Dev';
+    if (/story/.test(low)) return 'Story Req';
+    if (/planning|plan\b/.test(low)) return 'Planning';
+    if (/\bstart\b|content/.test(low)) return 'Content';
+    if (/release|staging|hyper|-cr\b|\bcr\b/.test(low)) return 'Streak QA';
+    return null;
+}
+
+/**
+ * Actual time spent in each pipeline stage, learned from sibling milestone dates.
+ * - Completed stages: next milestone − this milestone (only after the page has reached the next stage).
+ * - Current stage (active pages): today − entry date (ongoing).
+ * - Live pages: all filled intervals through go-live; no ongoing.
+ */
+function computeRowStageDurations(row, flowCols, todayMs, rawStage, rowCompleted, liveDateRaw, yearHint) {
+    const dates = {};
+    flowCols.forEach(fc => {
+        if (fc.idx < 0) return;
+        const raw = roadmapCell(row, fc.idx);
+        if (!raw) return;
+        const ms = parseMilestoneMs(raw, yearHint);
+        if (!isNaN(ms)) dates[fc.stage] = ms;
+    });
+    if (rowCompleted && liveDateRaw && dates['Live'] == null) {
+        const ms = parseMilestoneMs(liveDateRaw, yearHint);
+        if (!isNaN(ms)) dates['Live'] = ms;
+    }
+
+    const flowStages = flowCols.map(fc => fc.stage);
+    const currentFlow = mapToFlowStage(rawStage);
+    let currentIdx = currentFlow ? flowStages.indexOf(currentFlow) : -1;
+    const isLive = rowCompleted || currentFlow === 'Live';
+    const reachedLive = isLive || dates['Live'] != null;
+
+    if (currentIdx < 0 && !isLive) {
+        // Unknown stage label — infer from last dated milestone before gaps
+        for (let i = flowStages.length - 1; i >= 0; i--) {
+            if (dates[flowStages[i]] != null) { currentIdx = i; break; }
+        }
+    }
+
+    const durations = [];
+    for (let i = 0; i < flowCols.length - 1; i++) {
+        const stage = flowCols[i].stage;
+        const next = flowCols[i + 1].stage;
+        const ms0 = dates[stage];
+        if (ms0 == null) continue;
+
+        if (isLive && dates[next] != null) {
+            const days = Math.round((dates[next] - ms0) / 86400000);
+            pushStageDuration(durations, stage, days, false);
+            continue;
+        }
+
+        if (currentIdx >= 0) {
+            if (i < currentIdx && dates[next] != null) {
+                const days = Math.round((dates[next] - ms0) / 86400000);
+                pushStageDuration(durations, stage, days, false);
+            } else if (i === currentIdx) {
+                const days = Math.round((todayMs - ms0) / 86400000);
+                pushStageDuration(durations, stage, days, true);
+                break;
+            }
+        }
+    }
+
+    let pipelineActualDays = null;
+    const sumDur = durations.reduce((s, d) => s + d.days, 0);
+    if (reachedLive && dates['Planning'] != null && dates['Live'] != null) {
+        const span = Math.round((dates['Live'] - dates['Planning']) / 86400000);
+        if (span >= 0 && span <= MAX_PIPELINE_DAYS) pipelineActualDays = span;
+    }
+    if (pipelineActualDays == null && sumDur > 0 && sumDur <= MAX_PIPELINE_DAYS) {
+        pipelineActualDays = sumDur;
+    }
+
+    return { durations, reachedLive, pipelineActualDays };
+}
+
+/**
+ * Per-page delivery records from sibling tab rows (one entry per page row).
+ * Used by the Analytics page so metrics reflect page-level delivery, not the master row.
+ * Each entry: { page, stage, status, start, release, live, progress, completed }.
+ * Dates are raw strings; `live` is only set for completed (gone-live) pages.
+ */
+function computeSiblingPages(hlist, rows) {
+    const ti         = hlist.length ? findSiblingTitleColumnIndex(hlist) : 0;
+    const idxStage   = findSiblingCol(hlist, ['stage', 'phase']);
+    const idxStatus  = findSiblingCol(hlist, ['status', 'health']);
+    const idxStart   = findSiblingCol(hlist, ['start_date', 'project_start_date', 'start']);
+    const idxRelease = findSiblingCol(hlist, ['release_date', 'planned_release_date', 'release', 'target_date']);
+    const idxLive    = findSiblingCol(hlist, ['actual_live_date', 'live_date', 'go_live', 'live']);
+    const idxProgress = findSiblingCol(hlist, ['progress', 'pct', 'percent', '%']);
+    const idxDev     = findSiblingCol(hlist, ['developer', 'dev']);
+    const idxQa      = findSiblingCol(hlist, ['qa', 'qa_engineer', 'q_a']);
+    const flowCols   = STAGE_FLOW.map(f => ({ stage: f.stage, idx: findSiblingMilestoneCol(hlist, f.aliases) }));
+    const todayMs    = startOfDay(new Date()).getTime();
+
+    const out = [];
+    rows.forEach(row => {
+        if (!row.some(cell => cell && String(cell).trim())) return;
+        const rawStage = idxStage >= 0 ? roadmapCell(row, idxStage) : '';
+        const stage = normalizeStage(rawStage);
+        const low = rawStage.toLowerCase();
+        const completed = stage === 'Live' || low.includes('live') || low.includes('done') || low.includes('completed');
+        const ps = idxProgress >= 0 ? roadmapCell(row, idxProgress) : '';
+        const n = parseInt(ps, 10);
+        const yearHint = milestoneYearHint(row, idxRelease, idxStart, idxLive);
+        const liveRaw = completed && idxLive >= 0 ? roadmapCell(row, idxLive) : '';
+        const { durations, reachedLive: reachedActual, pipelineActualDays } = computeRowStageDurations(row, flowCols, todayMs, rawStage, completed, liveRaw, yearHint);
+        const { expectations, reachedLive: reachedPlan, pipelineExpectedDays } = computeRowStageExpectations(row, flowCols, yearHint);
+        const reachedLive = reachedActual || reachedPlan;
+        out.push({
+            page:      roadmapCell(row, ti),
+            stage,
+            rawStage:  rawStage || stage,
+            status:    idxStatus >= 0 ? roadmapCell(row, idxStatus) : '',
+            start:     idxStart >= 0 ? roadmapCell(row, idxStart) : '',
+            release:   idxRelease >= 0 ? roadmapCell(row, idxRelease) : '',
+            // Only treat a page as gone-live when its stage says so (avoids pre-filled live dates).
+            live:      completed && idxLive >= 0 ? roadmapCell(row, idxLive) : '',
+            progress:  !isNaN(n) ? Math.min(100, Math.max(0, n)) : 0,
+            developer: idxDev >= 0 ? roadmapCell(row, idxDev) : '',
+            qa:        idxQa >= 0 ? roadmapCell(row, idxQa) : '',
+            completed,
+            stageExpectations: expectations,
+            stageDurations: durations,
+            pipelineExpectedDays,
+            pipelineActualDays,
+            reachedLive,
+        });
+    });
+    return out;
+}
+
+/** Map a delivery unit to one of the five Overview funnel buckets. */
+function funnelBucketFromUnit(u) {
+    let bucket = normalizeStage(u?.stage || u?.rawStage || '');
+    if (bucket === 'Backlog') bucket = 'Planning';
+    return bucket;
+}
+
+/**
+ * Stage Funnel + Overview charts: page counts grouped by pipeline stage.
+ * Streak projects → sibling sheet pages; ClickUp / unlinked → one master row each.
+ */
+function getFunnelStageCounts() {
+    const stages = ['Planning', 'Development', 'QA', 'Release', 'Live'];
+    const counts = {};
+    const overdueByStage = {};
+    const alertByStage = {};
+    stages.forEach(s => {
+        counts[s] = 0;
+        overdueByStage[s] = 0;
+        alertByStage[s] = 0;
+    });
+
+    const today = startOfDay(new Date());
+    const units = typeof getAnalyticsUnits === 'function' ? getAnalyticsUnits() : [];
+
+    units.forEach(u => {
+        const bucket = funnelBucketFromUnit(u);
+        if (!counts.hasOwnProperty(bucket)) return;
+        counts[bucket]++;
+
+        if (bucket === 'Live') return;
+
+        const rel = u.release_date ? parseSmartDate(u.release_date) : null;
+        const isOverdue = rel && !isNaN(rel.getTime()) && rel < today;
+        const st = u.status || '';
+        const isAlert = st === 'at_risk' || st === 'delayed';
+
+        if (isOverdue) overdueByStage[bucket]++;
+        else if (isAlert) alertByStage[bucket]++;
+    });
+
+    return { stages, counts, overdueByStage, alertByStage, total: units.length };
+}
+
+/**
+ * Analytics "delivery units": page-level rows from the sibling Delivery tab when a project
+ * has one (Streak Google-Sheet projects), else the master project row (ClickUp / unlinked).
+ * Units are project-shaped so the Analytics builders can treat each like a project.
+ */
+function getAnalyticsUnits() {
+    const projects = (typeof AppState !== 'undefined' && AppState.allProjects) ? AppState.allProjects : [];
+    const units = [];
+    projects.forEach(p => {
+        const pages = (p.roadmap?.hasSibling && Array.isArray(p.roadmap.pages) && p.roadmap.pages.length)
+            ? p.roadmap.pages : null;
+        if (pages) {
+            pages.forEach(pg => {
+                if (!pg.page) return;
+                units.push({
+                    id:               p.id,
+                    name:             `${p.name} · ${pg.page}`,
+                    projectName:      p.name,
+                    page:             pg.page,
+                    client:           p.client,
+                    priority:         p.priority,
+                    owner:            p.owner,
+                    stage:            pg.stage,
+                    rawStage:         pg.rawStage || pg.stage,
+                    status:           normalizeStatus(pg.status),
+                    developer:        pg.developer,
+                    qa_engineer:      pg.qa,
+                    start_date:       pg.start,
+                    release_date:     pg.release,
+                    actual_live_date: pg.live,
+                    progress:         pg.progress,
+                    stageExpectations: pg.stageExpectations || [],
+                    stageDurations:   pg.stageDurations || [],
+                    pipelineExpectedDays: pg.pipelineExpectedDays,
+                    pipelineActualDays: pg.pipelineActualDays,
+                    reachedLive:      !!pg.reachedLive,
+                    isPage:           true,
+                });
+            });
+        } else {
+            units.push({
+                id:               p.id,
+                name:             p.name,
+                projectName:      p.name,
+                page:             '',
+                client:           p.client,
+                priority:         p.priority,
+                owner:            p.owner,
+                stage:            normalizeStage(p.stage || ''),
+                rawStage:         (p.stage || '').trim() || normalizeStage(p.stage || ''),
+                status:           normalizeStatus(p.status),
+                developer:        p.developer,
+                qa_engineer:      p.qa_engineer,
+                start_date:       p.start_date,
+                release_date:     p.release_date,
+                actual_live_date: p.actual_live_date,
+                progress:         typeof projectDisplayProgress === 'function' ? projectDisplayProgress(p) : (p.progress || 0),
+                stageExpectations: [],
+                stageDurations:   [],
+                reachedLive:      false,
+                isPage:           false,
+            });
+        }
+    });
+    return units;
+}
+
+/**
+ * Drill-down selector for Analytics charts. Given a chart element (type + value),
+ * returns the underlying delivery-page units so the UI can show *what* the numbers are,
+ * not just the count. Mirrors the filters used by each Analytics builder.
+ * @returns {{ title:string, subtitle:string, units:Array }}
+ */
+function getAnalyticsDrillUnits(type, value, extra) {
+    const units = getAnalyticsUnits();
+    const ns = s => normalizeStage(s || '');
+    const pd = parseSmartDate;
+    const uSing = typeof deliveryUnitWord === 'function' ? deliveryUnitWord(false) : 'page';
+    const uPlur = typeof deliveryUnitWord === 'function' ? deliveryUnitWord(true) : 'pages';
+    const pluralUnit = (n) => `${n} ${n !== 1 ? uPlur : uSing}`;
+    let list = [];
+    let title = 'Details';
+    let subtitle = '';
+
+    switch (type) {
+        case 'stage':
+            list = units.filter(u => ns(u.stage) === value);
+            title = `${value} — ${pluralUnit(list.length)}`;
+            subtitle = `Delivery ${uPlur} currently in this stage`;
+            break;
+
+        case 'rawstage':
+            list = units.filter(u => (u.rawStage || u.stage || '').trim() === value);
+            title = `${value} — ${pluralUnit(list.length)}`;
+            subtitle = isClickUpWorkspace(AppState?.activeWorkspace)
+                ? `${uPlur.charAt(0).toUpperCase() + uPlur.slice(1)} whose ClickUp status is exactly this value`
+                : 'Pages whose sheet stage is exactly this value';
+            break;
+
+        case 'stagetime': {
+            const out = [];
+            units.forEach(u => {
+                if (value === 'Live') {
+                    if (u.reachedLive) {
+                        const total = u.pipelineActualDays ?? u.pipelineExpectedDays;
+                        out.push({
+                            ...u,
+                            drillMetric: total != null ? `${total}d total` : 'live',
+                        });
+                    }
+                    return;
+                }
+                const d = (u.stageDurations || []).find(x => x.stage === value);
+                if (d) out.push({ ...u, drillMetric: `${d.days}d${d.ongoing ? ' ⏳' : ''}` });
+            });
+            out.sort((a, b) => {
+                const na = parseInt(String(a.drillMetric), 10) || 0;
+                const nb = parseInt(String(b.drillMetric), 10) || 0;
+                return nb - na;
+            });
+            list = out;
+            title = `${value} benchmark — ${pluralUnit(list.length)}`;
+            subtitle = `Actual days in this stage (completed intervals + ongoing for active ${uPlur})`;
+            break;
+        }
+
+        case 'velocity': {
+            const [yy, mm] = String(value).split('-').map(Number);
+            list = units.filter(u => {
+                if (!u.actual_live_date) return false;
+                const d = pd(u.actual_live_date);
+                return !isNaN(d.getTime()) && d.getFullYear() === yy && d.getMonth() === mm;
+            });
+            if (extra === 'ontime' || extra === 'late') {
+                list = list.filter(u => {
+                    const d = pd(u.actual_live_date);
+                    const rel = u.release_date ? pd(u.release_date) : null;
+                    const onTime = rel && !isNaN(rel.getTime()) && d <= rel;
+                    return extra === 'ontime' ? onTime : !onTime;
+                });
+            }
+            const lbl = isNaN(yy) ? value : new Date(yy, mm, 1).toLocaleString('en-US', { month: 'long', year: 'numeric' });
+            title = `Launched in ${lbl} — ${list.length}`;
+            subtitle = extra === 'ontime' ? 'On-time go-lives'
+                : extra === 'late' ? 'Late go-lives'
+                : 'All go-lives this month';
+            break;
+        }
+
+        case 'developer':
+            list = units.filter(u => ns(u.stage) !== 'Live'
+                && splitAssigneeNames(u.developer).some(n => n === value));
+            title = `${value} — ${pluralUnit(list.length)} active`;
+            subtitle = `Active (non-Live) ${uPlur} assigned to this developer`;
+            break;
+
+        case 'ontime':
+            list = units.filter(u => {
+                if (ns(u.stage) !== 'Live' || !u.release_date || !u.actual_live_date) return false;
+                const rel = pd(u.release_date), live = pd(u.actual_live_date);
+                return !isNaN(rel.getTime()) && !isNaN(live.getTime()) && live <= rel;
+            });
+            title = `On-time deliveries — ${list.length}`;
+            subtitle = `Live ${uPlur} that met their due date`;
+            break;
+
+        case 'delayed':
+            list = units.filter(u => {
+                if (ns(u.stage) !== 'Live' || !u.release_date || !u.actual_live_date) return false;
+                const rel = pd(u.release_date), live = pd(u.actual_live_date);
+                return !isNaN(rel.getTime()) && !isNaN(live.getTime()) && live > rel;
+            });
+            title = `Delayed deliveries — ${list.length}`;
+            subtitle = `Live ${uPlur} that missed their due date`;
+            break;
+
+        case 'velocity30': {
+            const today = new Date(); today.setHours(0, 0, 0, 0);
+            const ago = new Date(today); ago.setDate(today.getDate() - 30);
+            list = units.filter(u => {
+                if (ns(u.stage) !== 'Live' || !u.actual_live_date) return false;
+                const d = pd(u.actual_live_date);
+                return !isNaN(d.getTime()) && d >= ago && d <= today;
+            });
+            title = `Went live in last 30 days — ${list.length}`;
+            subtitle = 'Recent go-lives';
+            break;
+        }
+
+        case 'pipeline':
+            list = units.filter(u => !['Live', 'Backlog'].includes(ns(u.stage)));
+            if (extra === 'ontrack') list = list.filter(u => u.status === 'on_track');
+            title = `Active pipeline — ${pluralUnit(list.length)}`;
+            subtitle = extra === 'ontrack' ? `On-track active ${uPlur}` : `All active (non-Live) ${uPlur}`;
+            break;
+
+        default:
+            list = units;
+            title = `All pages — ${list.length}`;
+    }
+
+    return { title, subtitle, units: list };
+}
+
 /** Most common normalized stage across sibling rows (e.g. Streak_QA → QA for funnel). */
 function computeDominantFunnelStage(hlist, rows) {
     const idxStage = findSiblingCol(hlist, ['stage', 'phase']);
@@ -999,6 +1687,257 @@ function projectHasSiblingLink(p) {
     return !!((p.detail_gid || '').trim() || (p.detail_csv_url || '').trim());
 }
 
+async function fetchClickUpTaskDetail(taskId, token) {
+    if (!taskId || !token || token === 'clickup_mock') return null;
+    try {
+        const res = await fetch(
+            `https://api.clickup.com/api/v2/task/${taskId}?include_subtasks=true`,
+            { headers: clickUpAuthHeaders(token), cache: 'no-store' }
+        );
+        if (!res.ok) return null;
+        return await res.json();
+    } catch (e) {
+        console.warn('[Atlas] ClickUp task detail fetch failed:', taskId, e);
+        return null;
+    }
+}
+
+/** Map one ClickUp subtask to sibling-page shape for analytics/funnel/resources. */
+function mapClickUpSubtaskToPage(subtask, parent, ws) {
+    const useDoneStatus = featureOn('CLICKUP_DONE_STATUS');
+    const isDone = useDoneStatus && clickUpTaskIsDone(subtask);
+    const statusRaw = subtask.status?.status || '';
+    const stage = clickUpStageFromStatus(statusRaw, isDone, ws);
+    const flowStage = clickUpFlowStage(statusRaw, isDone, ws);
+    const completed = isDone || stage === 'Live';
+    const start = parseClickUpTimestamp(subtask.start_date);
+    const release = parseClickUpTimestamp(subtask.due_date);
+    const live = completed
+        ? (parseClickUpTimestamp(subtask.date_closed) || parseClickUpTimestamp(subtask.date_done) || release)
+        : '';
+    const todayMs = startOfDay(new Date()).getTime();
+    const startMs = start ? parseSmartDate(start)?.getTime() : NaN;
+    const liveMs = live ? parseSmartDate(live)?.getTime() : NaN;
+    const durations = [];
+    if (!isNaN(startMs)) {
+        const endMs = !isNaN(liveMs) ? liveMs : todayMs;
+        const days = Math.min(
+            typeof MAX_STAGE_DAYS !== 'undefined' ? MAX_STAGE_DAYS : 180,
+            Math.max(0, Math.round((endMs - startMs) / 86400000))
+        );
+        durations.push({ stage: flowStage || stage || 'Development', days, ongoing: !completed });
+    }
+    let pipelineActualDays = null;
+    if (!isNaN(startMs) && !isNaN(liveMs)) {
+        pipelineActualDays = Math.round((liveMs - startMs) / 86400000);
+    }
+    let progress = completed ? 100 : 0;
+    const clPct = clickUpChecklistProgress(subtask.checklists);
+    if (clPct != null && !completed) progress = clPct;
+
+    return {
+        page:      subtask.name || 'Subtask',
+        stage,
+        rawStage:  statusRaw || stage,
+        status:    normalizeStatus(statusRaw || parent?.status || ''),
+        start,
+        release,
+        live,
+        progress,
+        developer: clickUpAssigneeName(subtask.assignees, 0),
+        qa:        clickUpAssigneeName(subtask.assignees, 1),
+        completed,
+        stageExpectations: [],
+        stageDurations: durations,
+        pipelineExpectedDays: null,
+        pipelineActualDays,
+        reachedLive: completed,
+    };
+}
+
+function computeClickUpSubtaskPages(subtasks, parent, ws) {
+    if (!Array.isArray(subtasks) || !subtasks.length) return [];
+    return subtasks.map(st => mapClickUpSubtaskToPage(st, parent, ws));
+}
+
+function computeClickUpRoadmapFromPages(parent, pages) {
+    let live = 0;
+    let inprog = 0;
+    let pending = 0;
+    let pctSum = 0;
+    pages.forEach(pg => {
+        const st = normalizeStage(pg.stage || '');
+        if (pg.completed || st === 'Live') live += 1;
+        else if (st === 'Backlog' || st === 'Planning') pending += 1;
+        else inprog += 1;
+        pctSum += pg.progress || 0;
+    });
+    const total = pages.length;
+    const avgPct = total ? Math.round(pctSum / total) : (parent.progress || 0);
+    const stageCounts = {};
+    pages.forEach(pg => {
+        const b = normalizeStage(pg.stage || '');
+        stageCounts[b] = (stageCounts[b] || 0) + 1;
+    });
+    let funnelStage = parent.stage;
+    let maxN = 0;
+    Object.entries(stageCounts).forEach(([s, n]) => {
+        if (n > maxN) { maxN = n; funnelStage = s; }
+    });
+    return { total, live, inprog, pending, avgPct, funnelStage };
+}
+
+function computeClickUpSubtaskAssignments(pages) {
+    const out = [];
+    pages.forEach(pg => {
+        const base = {
+            page: pg.page,
+            stage: pg.stage,
+            status: pg.status,
+            start: pg.start,
+            end: pg.completed ? (pg.live || pg.release) : pg.release,
+            completed: pg.completed,
+        };
+        if (isValidResourceName(pg.developer)) {
+            out.push({ person: pg.developer, role: 'Developer', ...base });
+        }
+        if (isValidResourceName(pg.qa)) {
+            out.push({ person: pg.qa, role: 'QA', ...base });
+        }
+    });
+    return out;
+}
+
+/**
+ * After ClickUp load, expand tasks with subtasks into roadmap.pages (Streak sibling parity).
+ */
+async function enrichClickUpWithSubtasks(projects, token, ws) {
+    if (!featureOn('CLICKUP_SUBTASK_ENRICH')) return projects;
+    const list = Array.isArray(projects) ? projects.map(p => ({ ...p })) : [];
+    const CONCURRENCY = 4;
+    const needDetail = [];
+
+    list.forEach((p, idx) => {
+        const raw = p._clickupRaw;
+        const subs = raw?.subtasks || p.clickupMeta?.subtasks || [];
+        if (!subs.length && raw?.id && (raw.subtasks_count > 0 || raw.subtasks?.length === 0)) {
+            needDetail.push({ idx, id: raw.id });
+        }
+    });
+
+    for (let i = 0; i < needDetail.length; i += CONCURRENCY) {
+        const batch = needDetail.slice(i, i + CONCURRENCY);
+        await Promise.all(batch.map(async ({ idx, id }) => {
+            const detail = await fetchClickUpTaskDetail(id, token);
+            if (detail?.subtasks?.length) {
+                list[idx]._clickupRaw = { ...list[idx]._clickupRaw, subtasks: detail.subtasks };
+                if (list[idx].clickupMeta) list[idx].clickupMeta.subtasks = detail.subtasks;
+            }
+        }));
+    }
+
+    list.forEach((p, idx) => {
+        const raw = p._clickupRaw;
+        const subs = raw?.subtasks || p.clickupMeta?.subtasks || [];
+        if (!subs.length) {
+            delete list[idx]._clickupRaw;
+            return;
+        }
+        const pages = computeClickUpSubtaskPages(subs, p, ws);
+        const assignments = computeClickUpSubtaskAssignments(pages);
+        const rm = computeClickUpRoadmapFromPages(p, pages);
+        list[idx].roadmap = {
+            hasSibling: true,
+            source: 'clickup',
+            ...rm,
+            assignments,
+            pages,
+        };
+        delete list[idx]._clickupRaw;
+    });
+
+    const enriched = list.filter(p => p.roadmap?.source === 'clickup').length;
+    if (enriched) console.log(`[Atlas] ClickUp: ${enriched} tasks enriched with subtask deliverables`);
+    return list;
+}
+
+/** Build pseudo-table for ClickUp deliverables (reuses sibling roadmap UI). */
+function buildClickUpDeliverablesTable(pages) {
+    const headers = ['Deliverable', 'Stage', 'Status', 'Assignee', 'Due', 'Progress'];
+    const rows = (pages || []).map(pg => [
+        pg.page || '',
+        pg.rawStage || pg.stage || '',
+        pg.status || '',
+        pg.developer || '',
+        pg.release || '',
+        pg.progress != null ? `${pg.progress}%` : '',
+    ]);
+    return { headers, rows };
+}
+
+/**
+ * Project detail loader — sibling CSV for Sheets, ClickUp subtasks/meta for ClickUp.
+ */
+async function loadProjectDetailData(project, sheetBaseUrl, ws) {
+    const workspace = ws || (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
+    if (isClickUpWorkspace(workspace)) {
+        return loadClickUpProjectDetail(project, workspace.clickupToken, workspace);
+    }
+    return loadProjectSiblingData(project, sheetBaseUrl);
+}
+
+async function loadClickUpProjectDetail(project, token, ws) {
+    let pages = project.roadmap?.pages || [];
+    let checklists = project.clickupMeta?.checklists || [];
+    let subtasks = project.clickupMeta?.subtasks || [];
+    let customFields = project.clickupMeta?.customFields || [];
+    let url = project.clickupMeta?.url || '';
+
+    if (!pages.length && project.id && token && token !== 'clickup_mock') {
+        const detail = await fetchClickUpTaskDetail(project.id, token);
+        if (detail) {
+            subtasks = detail.subtasks || subtasks;
+            checklists = detail.checklists || checklists;
+            customFields = detail.custom_fields || customFields;
+            url = detail.url || url;
+            if (subtasks.length) {
+                pages = computeClickUpSubtaskPages(subtasks, project, ws);
+            }
+        }
+    } else if (subtasks.length && !pages.length) {
+        pages = computeClickUpSubtaskPages(subtasks, project, ws);
+    }
+
+    if (!pages.length && !subtasks.length) {
+        return {
+            hasSibling: false,
+            source: 'clickup',
+            clickup: true,
+            description: project.notes || '',
+            tags: project.tags || [],
+            checklists,
+            customFields,
+            url,
+        };
+    }
+
+    const table = buildClickUpDeliverablesTable(pages);
+    const rm = computeClickUpRoadmapFromPages(project, pages);
+    return {
+        hasSibling: true,
+        source: 'clickup',
+        clickup: true,
+        table,
+        pages,
+        ...rm,
+        description: project.notes || '',
+        tags: project.tags || [],
+        checklists,
+        customFields,
+        url,
+    };
+}
+
 /**
  * After master CSV load, fetch sibling tabs and attach roadmap metrics for list/overview views.
  */
@@ -1017,7 +1956,9 @@ async function enrichProjectsWithSiblingMetrics(projects, sheetBaseUrl) {
                 const sib = await loadProjectSiblingData(p, base);
                 if (sib.source === 'ok' && sib.table?.headers?.length && sib.table.rows?.length) {
                     const rm = computeRoadmapMetrics(p, sib.table.headers, sib.table.rows);
-                    list[idx].roadmap = { hasSibling: true, source: 'sibling', ...rm };
+                    const assignments = computeSiblingAssignments(sib.table.headers, sib.table.rows);
+                    const pages = computeSiblingPages(sib.table.headers, sib.table.rows);
+                    list[idx].roadmap = { hasSibling: true, source: 'sibling', ...rm, assignments, pages };
                 } else if (sib.hasSibling && sib.source === 'error') {
                     list[idx].roadmap = { hasSibling: false, source: 'error' };
                 }
@@ -1202,6 +2143,10 @@ function parseSmartDate(str) {
             }
         }
     }
+
+    // Reject partial dates like "13-Feb" — JS would guess year 2001 and break stage math.
+    if (/^\d{1,2}-[A-Za-z]{3,9}$/i.test(t)) return new Date(NaN);
+
     return new Date(t);
 }
 
@@ -1394,12 +2339,17 @@ function projectAssignmentEnd(project) {
 function buildResourceMap(projects) {
     const map = {};
 
-    function push(name, role, project) {
+    function ensurePerson(n) {
+        if (!map[n]) map[n] = { name: n, assignments: [], activeCount: 0, conflicts: [], freeFrom: null };
+        return map[n];
+    }
+
+    function push(name, role, project, excludeSet) {
         if (!isValidResourceName(name)) return;
-        name.split(',').forEach(rawName => {
-            const n = rawName.trim();
+        splitAssigneeNames(name).forEach(n => {
             if (!isValidResourceName(n)) return;
-            if (!map[n]) map[n] = { name: n, assignments: [], activeCount: 0, conflicts: [], freeFrom: null };
+            if (excludeSet && excludeSet.has(n)) return;
+            ensurePerson(n);
 
             const stageNorm = normalizeStage(project.stage || '');
             const completed = projectAssignmentCompleted(project);
@@ -1419,12 +2369,90 @@ function buildResourceMap(projects) {
         });
     }
 
+    /**
+     * Sibling tab rows → one merged assignment per person+role on the project.
+     * Active pages drive the window; person is busy until their last active page's release.
+     * Returns the set of people covered so master-row fallback can skip them.
+     */
+    function pushSiblingAssignments(project, siblingAssignments) {
+        const merged = {};
+        siblingAssignments.forEach(sa => {
+            splitAssigneeNames(sa.person).forEach(n => {
+                if (!isValidResourceName(n)) return;
+                const key = `${n}|${sa.role}`;
+                const cur = merged[key] || (merged[key] = {
+                    name: n, role: sa.role, pages: 0, activePages: 0,
+                    start: null, endActive: null, endDone: null, allDone: true, stage: sa.stage,
+                });
+                cur.pages += 1;
+                const start = sa.start ? parseSmartDate(sa.start) : null;
+                if (start && !isNaN(start.getTime()) && (!cur.start || start < cur.start)) cur.start = startOfDay(start);
+                const end = sa.end ? parseSmartDate(sa.end) : null;
+                const endOk = end && !isNaN(end.getTime()) ? startOfDay(end) : null;
+                if (sa.completed) {
+                    if (endOk && (!cur.endDone || endOk > cur.endDone)) cur.endDone = endOk;
+                } else {
+                    cur.allDone = false;
+                    cur.activePages += 1;
+                    cur.stage = sa.stage;
+                    if (endOk && (!cur.endActive || endOk > cur.endActive)) cur.endActive = endOk;
+                }
+            });
+        });
+
+        const projEnd   = projectAssignmentEnd(project);
+        const projStart = project.start_date ? parseSmartDate(project.start_date) : null;
+        const covered = new Set();
+
+        Object.values(merged).forEach(m => {
+            covered.add(m.name);
+            ensurePerson(m.name);
+            // Page-level stage is the source of truth: a person is only done when ALL
+            // their pages are Live. A Live master row does NOT free someone who still
+            // has pages in Dev/QA (e.g. a post-live CR with new pages in progress).
+            const completed = m.allDone;
+            let end = completed ? (m.endDone || m.endActive) : m.endActive;
+            if (!end) end = projEnd && !isNaN(projEnd.getTime()) ? projEnd : null;
+            let start = m.start || (projStart && !isNaN(projStart.getTime()) ? startOfDay(projStart) : null);
+
+            map[m.name].assignments.push({
+                projectId:   project.id,
+                projectName: project.name,
+                role:        m.role,
+                start,
+                end,
+                status:      project.status,
+                stage:       completed ? 'Live' : (m.stage || normalizeStage(project.stage || '')),
+                completed,
+                pages:       m.pages,
+                activePages: m.activePages,
+                source:      'sibling',
+            });
+        });
+        return covered;
+    }
+
     projects.forEach(p => {
-        push(p.owner,       'Owner',     p);
-        push(p.developer,   'Developer', p);
-        push(p.qa_engineer, 'QA',        p);
-        push(p.ba,          'BA',        p);
-        push(p.page_owner,  'Page owner',p);
+        const sib = featureOn('SIBLING_RESOURCE_MAP')
+            && p.roadmap?.hasSibling
+            && Array.isArray(p.roadmap.assignments) && p.roadmap.assignments.length
+            ? p.roadmap.assignments : null;
+
+        push(p.owner, 'Owner', p);
+        push(p.ba,    'BA',    p);
+
+        if (sib) {
+            // Page-level roles come from the sibling tab; master row only fills in
+            // people the sibling tab doesn't mention (e.g. master-only Developer).
+            const covered = pushSiblingAssignments(p, sib);
+            push(p.developer,   'Developer',  p, covered);
+            push(p.qa_engineer, 'QA',         p, covered);
+            push(p.page_owner,  'Page owner', p, covered);
+        } else {
+            push(p.developer,   'Developer',  p);
+            push(p.qa_engineer, 'QA',         p);
+            push(p.page_owner,  'Page owner', p);
+        }
     });
 
     const today = new Date();
@@ -1473,17 +2501,22 @@ function buildResourceMap(projects) {
             }
         }
 
-        // Free when every active project has an end date; date = latest end (not before today)
+        // Free when every active project has an end date; date = latest end.
         if (!active.length) {
             if (person.assignments.length) person.freeFrom = new Date(today);
         } else {
             const allDated = active.every(a => a.end && !isNaN(a.end.getTime()));
             if (allDated) {
                 const maxEndMs = Math.max(...active.map(a => startOfDay(a.end).getTime()));
-                const freeMs = featureOn('RESOURCE_FREE_FROM_FIX')
-                    ? Math.max(maxEndMs, today.getTime())
-                    : maxEndMs;
-                person.freeFrom = startOfDay(new Date(freeMs));
+                if (featureOn('RESOURCE_FREE_FROM_FIX')) {
+                    // A passed release_date on a non-Live page means the work is overdue,
+                    // not finished — the person is still engaged with no known free date.
+                    person.freeFrom = maxEndMs < today.getTime()
+                        ? null
+                        : startOfDay(new Date(maxEndMs));
+                } else {
+                    person.freeFrom = startOfDay(new Date(maxEndMs));
+                }
             } else {
                 person.freeFrom = null;
             }
@@ -1548,7 +2581,7 @@ function computeAttentionScore(project, alerts, resourceMap, today) {
         }
     }
 
-    const people = [project.owner, project.developer].filter(Boolean);
+    const people = [...splitAssigneeNames(project.owner), ...splitAssigneeNames(project.developer)].filter(n => isValidResourceName(n));
     people.forEach(name => {
         const person = resourceMap[name];
         if (!person) return;

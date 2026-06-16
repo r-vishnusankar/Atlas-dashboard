@@ -46,6 +46,81 @@ const AppState = {
     timelineMode:  'gantt',   // 'gantt' | 'calendar'
     timelineZoom:  6,          // months to show in gantt: 3 | 6 | 12
 
+    // ── Zoho timelog (valoriz-zoho workspace) ─────────
+    timelogEntries: [],
+    timelogMeta:    null,  // { loadedAt, fileName, projects, clients }
+    timelogFilters: {
+        project:        null,
+        team:           null,
+        person:         null,
+        approvalStatus: 'Approved',
+    },
+    timelogDetailOpen: false,
+
+    get isZohoActive() {
+        return isZohoWorkspace(this.activeWorkspace);
+    },
+
+    get filteredTimelogEntries() {
+        return filterTimelogEntries(this.timelogEntries, this.timelogFilters);
+    },
+
+    get timelogSummary() {
+        return computeTimelogSummary(this.filteredTimelogEntries, this.timelogEntries);
+    },
+
+    setTimelogFilters(patch) {
+        this.timelogFilters = { ...this.timelogFilters, ...patch };
+    },
+
+    clearTimelogFilters() {
+        this.timelogFilters = {
+            project: null,
+            team: null,
+            person: null,
+            approvalStatus: 'Approved',
+        };
+    },
+
+    setTimelogData(entries, meta = {}) {
+        this.timelogEntries = entries || [];
+        this.timelogMeta = {
+            loadedAt: new Date().toISOString(),
+            fileName: meta.fileName || null,
+            projects: meta.projects || [...new Set((entries || []).map(e => e.project).filter(Boolean))],
+            clients: meta.clients || [...new Set((entries || []).map(e => e.client).filter(Boolean))],
+        };
+        if (this.timelogMeta.projects.length === 1 && !this.timelogFilters.project) {
+            this.timelogFilters.project = this.timelogMeta.projects[0];
+        }
+    },
+
+    restoreTimelogsFromStorage() {
+        if (!this.isZohoActive) return false;
+        const stored = loadZohoTimelogsFromStorage(this.activeWorkspaceId);
+        if (!stored || !Array.isArray(stored.entries)) return false;
+        this.timelogEntries = stored.entries;
+        this.timelogMeta = stored.meta || null;
+        return this.timelogEntries.length > 0;
+    },
+
+    persistTimelogsToStorage() {
+        if (!this.isZohoActive) return;
+        persistZohoTimelogs(this.activeWorkspaceId, {
+            entries: this.timelogEntries,
+            meta: this.timelogMeta,
+        });
+    },
+
+    clearTimelogs() {
+        this.timelogEntries = [];
+        this.timelogMeta = null;
+        this.clearTimelogFilters();
+        try {
+            localStorage.removeItem(zohoStorageKey(this.activeWorkspaceId));
+        } catch (e) { /* ignore */ }
+    },
+
     // ── Computed ──────────────────────────────
     get filteredProjects() {
         let projects = [...this.allProjects];
@@ -65,10 +140,10 @@ const AppState = {
         // Filters
         if (this.filters.stage)     projects = projects.filter(p => projectFunnelStage(p) === this.filters.stage);
         if (this.filters.status)    projects = projects.filter(p => p.status === this.filters.status);
-        if (this.filters.owner)     projects = projects.filter(p => p.owner === this.filters.owner);
+        if (this.filters.owner)     projects = projects.filter(p => splitAssigneeNames(p.owner).includes(this.filters.owner));
         if (this.filters.priority)  projects = projects.filter(p => p.priority === this.filters.priority);
-        if (this.filters.developer) projects = projects.filter(p => p.developer === this.filters.developer);
-        if (this.filters.qa)        projects = projects.filter(p => p.qa_engineer === this.filters.qa);
+        if (this.filters.developer) projects = projects.filter(p => splitAssigneeNames(p.developer).includes(this.filters.developer));
+        if (this.filters.qa)        projects = projects.filter(p => splitAssigneeNames(p.qa_engineer).includes(this.filters.qa));
         if (this.filters.client)    projects = projects.filter(p => p.client === this.filters.client);
 
         // Sort
@@ -92,25 +167,31 @@ const AppState = {
         return Math.round(this.allProjects.reduce((s, p) => s + projectDisplayProgress(p), 0) / this.allProjects.length);
     },
 
-    // Stage counts
+    // Stage counts — sibling pages grouped by pipeline stage (see getFunnelStageCounts)
     get stageCounts() {
-        const stages = ['Planning','Development','QA','Release','Live'];
-        const counts = {};
-        stages.forEach(s => counts[s] = this.allProjects.filter(p => projectFunnelStage(p) === s).length);
-        return counts;
+        return typeof getFunnelStageCounts === 'function'
+            ? getFunnelStageCounts().counts
+            : {};
+    },
+    get funnelPageTotal() {
+        return typeof getFunnelStageCounts === 'function'
+            ? getFunnelStageCounts().total
+            : this.allProjects.length;
     },
 
-    // Unique owners for filter
-    get uniqueOwners()  { return [...new Set(this.allProjects.map(p => p.owner).filter(Boolean))].sort(); },
-    get uniqueDevs()    { return [...new Set(this.allProjects.map(p => p.developer).filter(Boolean))].sort(); },
-    get uniqueQAs()     { return [...new Set(this.allProjects.map(p => p.qa_engineer).filter(Boolean))].sort(); },
+    // Unique owners for filter (split multi-name cells into individual names)
+    get uniqueOwners()  { return [...new Set(this.allProjects.flatMap(p => splitAssigneeNames(p.owner)).filter(s => isValidResourceName(s)))].sort(); },
+    get uniqueDevs()    { return [...new Set(this.allProjects.flatMap(p => splitAssigneeNames(p.developer)).filter(s => isValidResourceName(s)))].sort(); },
+    get uniqueQAs()     { return [...new Set(this.allProjects.flatMap(p => splitAssigneeNames(p.qa_engineer)).filter(s => isValidResourceName(s)))].sort(); },
     get uniqueClients() { return [...new Set(this.allProjects.map(p => p.client).filter(Boolean))].sort(); },
 
     // ── Analytics ──────────────────────────────
     getAnalyticsData() {
+        // Page-level delivery units from the sibling sheet (Streak), master row otherwise.
+        const units = typeof getAnalyticsUnits === 'function' ? getAnalyticsUnits() : this.allProjects;
         // 1. Monthly Live Trends
         const liveByMonth = {};
-        this.allProjects.filter(p => p.actual_live_date).forEach(p => {
+        units.filter(p => p.actual_live_date).forEach(p => {
             const date = parseSmartDate(p.actual_live_date);
             if (!isNaN(date)) {
                 const month = date.toLocaleString('default', { month: 'short' });
@@ -119,8 +200,8 @@ const AppState = {
         });
 
         // 2. Efficiency Leaderboard (Variance against release_date)
-        const varianceList = this.allProjects
-            .filter(p => p.stage === 'Live' && p.release_date && p.actual_live_date)
+        const varianceList = units
+            .filter(p => normalizeStage(p.stage || '') === 'Live' && p.release_date && p.actual_live_date)
             .map(p => {
                 const target = parseSmartDate(p.release_date);
                 const actual = parseSmartDate(p.actual_live_date);

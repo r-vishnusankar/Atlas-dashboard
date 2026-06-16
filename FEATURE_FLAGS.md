@@ -19,6 +19,7 @@ Set any flag to **`false`**, bump script `?v=` in `index.html`, hard-refresh —
 | `RESOURCE_USE_PROJECTED_END` | `true` | Assignment end = max(release, velocity `projected`) for `freeFrom` | Release date only for resource timelines |
 | `CLICKUP_LIST_AS_CLIENT` | `true` | Digital Marketing: ClickUp **list** name (Valoriz, Streak, …) → `client` for filters/cards | `client` from custom field / `—` only |
 | `CLICKUP_DONE_STATUS` | `true` | **COMPLETE** / `closed` → `Live`, no overdue alerts; `date_closed` → go-live | Old mapping: `complete` ≠ Live; past due dates stay overdue |
+| `SIBLING_RESOURCE_MAP` | `true` | Resource map built from **sibling tab rows** (per-page Developer/QA/Page owner, page stage + release dates); master row fills people the tab doesn't mention | Resource assignments from master Project tab columns only |
 
 **Silent auto-refresh** (60s / tab focus) is not a separate flag: `App.refresh(true)` always uses soft re-render (scroll preserved, no AI loading flash). See [DATA_AND_CALCULATIONS.md](./DATA_AND_CALCULATIONS.md) §6.
 

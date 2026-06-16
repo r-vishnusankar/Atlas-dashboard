@@ -37,7 +37,7 @@ const CONFIG = {
             actions: '*',   // export, refresh, switchWorkspace, theme
         },
         manager: {
-            views: ['overview', 'projects', 'pipeline', 'alerts', 'resources', 'timeline', 'analytics', 'intelligence'],
+            views: ['overview', 'projects', 'pipeline', 'alerts', 'resources', 'timeline', 'analytics', 'intelligence', 'performance'],
             actions: ['export', 'refresh', 'switchWorkspace', 'theme'],
         },
         developer: {
@@ -88,8 +88,65 @@ const CONFIG = {
             clickupListId: '90166990133',
             clickupToken: 'pk_101076116_FZ2GAK8V6OHUBNON5WCKM8FZE5EYQYDV',
             sheetUrl: '',
+            /** ClickUp list status → normalized pipeline stage (lowercase keys). */
+            clickupStatusMap: {
+                'to do': 'Backlog',
+                'todo': 'Backlog',
+                'open': 'Backlog',
+                'planning': 'Planning',
+                'brief': 'Planning',
+                'in progress': 'Development',
+                'content': 'Development',
+                'design': 'Development',
+                'in review': 'QA',
+                'review': 'QA',
+                'qa': 'QA',
+                'staging': 'Release',
+                'publish': 'Release',
+                'complete': 'Live',
+                'completed': 'Live',
+                'closed': 'Live',
+                'done': 'Live',
+            },
+            /** Marketing pipeline for heatmap benchmarks (separate from Streak STAGE_FLOW). */
+            clickupStageFlow: [
+                { stage: 'Brief',    aliases: ['brief', 'brief_date', 'planning'] },
+                { stage: 'Content',  aliases: ['content', 'content_start', 'start_date'] },
+                { stage: 'Design',   aliases: ['design', 'design_start'] },
+                { stage: 'Review',   aliases: ['review', 'in_review'] },
+                { stage: 'Publish',  aliases: ['publish', 'release', 'staging'] },
+                { stage: 'Live',     aliases: ['live', 'actual_live_date', 'go_live', 'date_closed'] },
+            ],
+        },
+        {
+            id: 'valoriz-zoho',
+            name: 'Valoriz Zoho',
+            displayName: 'Valoriz Zoho — Timelog Performance',
+            integrationType: 'zoho_timelog',
+            sheetUrl: '',
         },
     ],
+
+    // Zoho timelog: Job Name → team for performance rollups
+    ZOHO_JOB_TEAM_MAP: {
+        'UI Development': 'Development',
+        'Home Page': 'Development',
+        'About Us Page': 'Development',
+        'Other Pages': 'Development',
+        'Services Page': 'Development',
+        'Testing': 'QA',
+        'BA': 'Business Analysis',
+        'Project Management': 'Project Management',
+        'Internal Meetings & Discussions': 'Overhead',
+        'DSM': 'Overhead',
+    },
+    ZOHO_DEFAULT_TEAM: 'Other',
+
+    /** Teams counted as productive (excludes Overhead) for productive-ratio KPI */
+    ZOHO_PRODUCTIVE_TEAMS: ['Development', 'QA', 'Business Analysis', 'Project Management'],
+
+    /** Sample timelog for demo (relative to index.html) */
+    ZOHO_SAMPLE_CSV_URL: 'Timelogs.csv',
 
     // Default workspace to load on first visit (uses localStorage to remember last selection)
     DEFAULT_WORKSPACE: 'streak',
@@ -199,6 +256,10 @@ const CONFIG = {
         CLICKUP_LIST_AS_CLIENT: true,
         /** ClickUp: COMPLETE/closed → Live, skip overdue alerts; infer go-live from date_closed. */
         CLICKUP_DONE_STATUS: true,
+        /** ClickUp: enrich tasks with subtasks → roadmap.pages (page-level funnel/analytics). */
+        CLICKUP_SUBTASK_ENRICH: true,
+        /** Resource map from sibling tab rows (per-page Developer/QA/Page owner); master row fallback. */
+        SIBLING_RESOURCE_MAP: true,
     },
 
     /** Per-project attention score weights (0–100 cap). */
@@ -266,3 +327,5 @@ Object.freeze(CONFIG.AI);
 Object.freeze(CONFIG.ATTENTION_WEIGHTS);
 Object.freeze(CONFIG.CAPACITY);
 Object.freeze(CONFIG.INTAKE);
+Object.freeze(CONFIG.ZOHO_JOB_TEAM_MAP);
+Object.freeze(CONFIG.ZOHO_PRODUCTIVE_TEAMS);

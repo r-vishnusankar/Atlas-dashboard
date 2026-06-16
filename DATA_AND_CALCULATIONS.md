@@ -319,6 +319,10 @@ Weighted score (cap 100), tier `critical` | `high` | `medium` | `low`. Factors: 
 
 When flag on, active assignment end uses `max(release_date, projected)` from velocity model so resource release aligns with Predictive Completion.
 
+#### Sibling-based resource map (`SIBLING_RESOURCE_MAP`)
+
+When a project has a linked sibling tab, `buildResourceMap` builds assignments from **per-page rows** (`computeSiblingAssignments`): Developer / QA / Page owner columns per page, page `Stage` (Live = done), page `release_date` / live-date as the assignment end. Rows are merged per person + role — a person is busy until their **last active page's** release; people whose pages are all Live count as free even if the master row still lists them. The master Project tab still provides Owner / BA and fills in people the sibling tab doesn't mention. Projects without sibling tabs (and ClickUp tasks) use the master row as before.
+
 #### `computeRoleCapacityForecast`
 
 Per role (Developer, QA, BA, Owner, Page owner): 13 weekly buckets; utilization % = active assignments / `CONFIG.CAPACITY.maxProjectsPerPerson[role]`. Summary: bench risk weeks (util below `lowUtilThreshold`), shortage weeks, `freeingNext30`.
