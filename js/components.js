@@ -189,7 +189,11 @@ function buildVelocitySparkline(months = 6) {
         if (!d || isNaN(d.getTime())) return;
         const mIdx = buckets.findIndex((_, i) => {
             const bStart = new Date(today.getFullYear(), today.getMonth() - (months - 1 - i), 1);
-            const bEnd   = new Date(today.getFullYear(), today.getMonth() - (months - 1 - i - 1), 0);
+            // Bug #9 fix: for the current month (last bucket), use today as end so go-lives
+            // this month are counted. Previously bEnd resolved to last day of prior month.
+            const bEnd = (featureOn('SPARKLINE_MONTH_FIX') && i === months - 1)
+                ? today
+                : new Date(today.getFullYear(), today.getMonth() - (months - 1 - i - 1), 0);
             return d >= bStart && d <= bEnd;
         });
         if (mIdx >= 0) buckets[mIdx].count++;
@@ -383,6 +387,24 @@ function renderInsightStrip() {
     return `<div class="ov-insight-strip">${cards}</div>`;
 }
 
+/** Stacked avatars for owner + developer + QA + BA on overview cards. */
+function renderProjectTeamAvatars(project, maxShow = 3) {
+    const team = typeof projectTeamMembers === 'function' ? projectTeamMembers(project, maxShow + 3) : [];
+    if (!team.length) {
+        const fallback = project?.owner || '?';
+        return `<div class="ov-risk-avatar" style="background:${stringToColor(fallback)}" title="${escapeHtml(fallback)}">${getInitials(fallback)}</div>`;
+    }
+    const shown = team.slice(0, maxShow);
+    const extra = team.length - shown.length;
+    const avatars = shown.map((name, i) =>
+        `<div class="ov-risk-avatar ov-team-avatar" style="background:${stringToColor(name)};z-index:${10 - i}" title="${escapeHtml(name)}">${getInitials(name)}</div>`
+    ).join('');
+    const more = extra > 0
+        ? `<span class="ov-team-more" title="${escapeHtml(team.slice(maxShow).join(', '))}">+${extra}</span>`
+        : '';
+    return `<div class="ov-team-avatars" title="${escapeHtml(team.join(', '))}">${avatars}${more}</div>`;
+}
+
 function renderAtRiskNow() {
     const today = new Date(); today.setHours(0,0,0,0);
     const risky = getPrioritizedAlerts(AppState.alerts, 5);
@@ -395,8 +417,7 @@ function renderAtRiskNow() {
     const rows = risky.map(p => {
         const bucket = alertBucketFor(p.id, AppState.alerts);
         const meta   = alertBadgeMeta(bucket);
-        const init   = getInitials(p.owner);
-        const avc    = stringToColor(p.owner);
+        const team   = typeof projectTeamMembers === 'function' ? projectTeamMembers(p) : [];
         const prog   = projectDisplayProgress(p) || 0;
         const pOffset = +(CIRC_SM * (1 - prog / 100)).toFixed(1);
         const reason = alertCardReason(p, bucket);
@@ -409,6 +430,10 @@ function renderAtRiskNow() {
         else if (p.daysToRelease != null) {
             daysColor = p.daysToRelease < 0 ? '#D93025' : p.daysToRelease <= 3 ? '#F59E0B' : 'var(--text-muted)';
         }
+
+        const teamHint = team.length > 1
+            ? `<span style="font-size:10px;color:var(--text-muted);">${team.length} people</span>`
+            : '';
 
         return `
         <div class="ov-risk-item" style="border-left:3px solid ${meta.color};background:${meta.bg};"
@@ -427,11 +452,12 @@ function renderAtRiskNow() {
                 <div class="ov-risk-meta">
                     <span class="ov-risk-badge" style="background:${meta.color}22;color:${meta.color};">${meta.label}</span>
                     <span style="font-size:11px;color:var(--text-muted);">${escapeHtml(p.stage)}</span>
+                    ${teamHint}
                 </div>
             </div>
             <div class="ov-risk-right">
                 ${daysText ? `<div class="ov-risk-days" style="color:${daysColor}">${daysText}</div>` : ''}
-                <div class="ov-risk-avatar" style="background:${avc}" title="${escapeHtml(p.owner)}">${init}</div>
+                ${renderProjectTeamAvatars(p)}
             </div>
         </div>`;
     }).join('');
@@ -655,7 +681,9 @@ function renderPipelineHealthCard() {
                 </div>
             </div>
             <div style="text-align:right;">
-                <div style="font-size:28px; font-weight:900; line-height:1;">${Math.round(onTrack / total * 100)}%</div>
+                ${/* Bug #3 fix: use non-Live pool as denominator (matches hero ring formula)
+                    when HEALTH_SCORE_UNIFIED is on; otherwise falls back to all.length. */ ''}
+                <div style="font-size:28px; font-weight:900; line-height:1;">${Math.round(onTrack / Math.max(featureOn('HEALTH_SCORE_UNIFIED') ? all.filter(p => p.stage !== 'Live').length : total, 1) * 100)}%</div>
                 <div style="font-size:11px; opacity:0.6; margin-top:2px;">on track</div>
             </div>
         </div>
@@ -1634,13 +1662,15 @@ function renderResources() {
     }).join('');
 
     /* ── A. Conflict Alerts ── */
+    const CONFLICT_PREVIEW = 2; // show first N pairs; rest behind Shrink / Show more
     const conflicted = people.filter(p => p.conflicts.length > 0);
     let conflictHTML = '';
     if (conflicted.length) {
-        conflictHTML = `<div class="res-conflict-grid">` + conflicted.map(p => {
+        conflictHTML = `<div class="res-conflict-grid">` + conflicted.map((p, pi) => {
             const init = getInitials(p.name);
             const avc  = stringToColor(p.name);
-            const overlapItems = p.conflicts.map(c => {
+            const cardId = `res-cfl-${pi}`;
+            const renderPair = (c) => {
                 const oStart = c.overlapStart ? fmtDate(c.overlapStart) : '—';
                 const oEnd   = c.overlapEnd   ? fmtDate(c.overlapEnd)   : '—';
                 return `
@@ -1665,9 +1695,20 @@ function renderResources() {
                         </div>
                     </div>
                 </div>`;
-            }).join('');
+            };
+            const preview = p.conflicts.slice(0, CONFLICT_PREVIEW).map(renderPair).join('');
+            const rest = p.conflicts.slice(CONFLICT_PREVIEW);
+            const moreBlock = rest.length
+                ? `<div class="res-cfl-more" id="${cardId}-more" hidden>${rest.map(renderPair).join('')}</div>
+                   <button type="button" class="res-cfl-toggle" id="${cardId}-btn"
+                     onclick="App.toggleConflictCard('${cardId}', ${rest.length})"
+                     aria-expanded="false">
+                     <span class="res-cfl-toggle__more">Show ${rest.length} more</span>
+                     <span class="res-cfl-toggle__less">Shrink</span>
+                   </button>`
+                : '';
             return `
-            <div class="res-conflict-card">
+            <div class="res-conflict-card" id="${cardId}">
                 <div class="res-conflict-header">
                     <div class="res-conflict-avatar" style="background:${avc}">${init}</div>
                     <div>
@@ -1678,7 +1719,8 @@ function renderResources() {
                         ? `<div class="res-cfl-free-from">free ${p.freeFrom <= today ? 'now' : fmtDate(p.freeFrom)}</div>`
                         : p.activeCount > 0 ? `<div class="res-cfl-free-from">release TBD</div>` : ''}
                 </div>
-                ${overlapItems}
+                ${preview}
+                ${moreBlock}
             </div>`;
         }).join('') + `</div>`;
     }
@@ -1804,8 +1846,9 @@ function renderResources() {
 
     let suggestHTML = '';
     if (unassigned.length) {
+        const workRole = typeof getPrimaryWorkRole === 'function' ? getPrimaryWorkRole() : 'Developer';
         const devPeople = people.filter(p =>
-            p.assignments.some(a => a.role === 'Developer')
+            p.assignments.some(a => a.role === workRole)
         ).sort((a, b) => {
             if (a.activeCount !== b.activeCount) return a.activeCount - b.activeCount;
             const aReady = a.activeCount === 0 || (a.freeFrom && a.freeFrom <= today);
@@ -1853,7 +1896,7 @@ function renderResources() {
     if (intelligenceEnabled()) {
         const cap = AppState.capacityForecast;
         const roles = cap.roles || {};
-        const intelRoles = ['Developer', 'QA', 'BA'];
+        const intelRoles = typeof getIntelRoles === 'function' ? getIntelRoles() : ['Developer', 'QA', 'BA'];
         capacityMiniHTML = `
         <section class="res-section">
             <h3 class="res-section__title">Capacity forecast (30 / 60 / 90 days)</h3>
@@ -2424,6 +2467,7 @@ function renderAnalytics() {
     const FLOW_COLORS = {
         'Planning':'#A78BFA', 'Content':'#A78BFA', 'Story Req':'#818CF8',
         'UI Dev':'#60A5FA', 'Streak Dev':'#3B82F6', 'Streak QA':'#34D399', 'Live':'#10B981',
+        'Brief':'#A78BFA', 'Design':'#60A5FA', 'Review':'#34D399', 'Publish':'#10B981',
     };
 
     const heatRows = heatmap.map(s => {
@@ -2449,12 +2493,12 @@ function renderAnalytics() {
     }).join('');
 
     const heatmapHTML = `
-    <div class="an-section card-light">
+    <div class="an-section card-light${!heatRows ? ' an-section--empty' : ''}">
         <div class="an-section-header">
             <div class="an-section-title">Stage Heatmap</div>
             <div class="an-section-sub">Predictive benchmark · avg days per stage from all live + active ${unitPlur}</div>
         </div>
-        <div class="an-heat-list">${heatRows || '<div style="padding:20px;color:var(--text-muted);font-size:13px;">No stage transition dates found in sibling sheets.</div>'}</div>
+        <div class="an-heat-list">${heatRows || `<div class="an-empty-compact">${(typeof isClickUpWorkspace === 'function' && isClickUpWorkspace(AppState?.activeWorkspace)) ? 'No stage duration dates found. Add start/due/closed dates on ClickUp tasks and subtasks.' : 'No stage transition dates found in sibling sheets.'}</div>`}</div>
         <div class="an-heat-hint">avg Nd = learned from real dates · includes ongoing time for active ${unitPlur} · red = avg &gt;21 days</div>
     </div>`;
 
@@ -2535,8 +2579,9 @@ function renderAnalytics() {
         ? AiInsights.predictiveShellHtml('ai-predictive-insights')
         : '';
 
+    const predEmpty = !atRisk.length && !onTrack.length;
     const predictiveHTML = `
-    <div class="an-section card-light an-section--predictive">
+    <div class="an-section card-light an-section--predictive${predEmpty ? ' an-section--empty' : ''}">
         <div class="an-section-header">
             <div class="an-section-title">Predictive Completion</div>
             <div class="an-section-sub">Velocity forecast from progress rate · projected vs target · same math as Alerts → Likely miss</div>
@@ -2544,7 +2589,7 @@ function renderAnalytics() {
         ${aiPredictiveShell}
         ${atRisk.length ? `<div class="an-pred-group-label an-pred-group-label--risk">Will likely miss deadline</div>${predRows(atRisk, '')}` : ''}
         ${onTrack.length ? `<div class="an-pred-group-label an-pred-group-label--ok">On track to hit deadline</div>${predRows(onTrack, '')}` : ''}
-        ${!atRisk.length && !onTrack.length ? `<div class="an-pred-empty">Not enough progress data to predict. Add start_date, release_date and progress values.</div>` : ''}
+        ${predEmpty ? `<div class="an-pred-empty an-empty-compact">Not enough progress data to predict. Add start_date, release_date and progress values.</div>` : ''}
     </div>`;
 
     /* ── Section 6: Team Efficiency Leaderboards ── */
@@ -2596,7 +2641,7 @@ function renderAnalytics() {
             </div>
             <div class="an-lb-badge an-lb-badge--blue">${avg}% avg</div>
         </div>`;
-    }).join('') : '<div class="an-lb-empty">No developer data.</div>';
+    }).join('') : `<div class="an-lb-empty">No ${(typeof isContentCreatorWorkspace === 'function' && isContentCreatorWorkspace()) ? 'content creator' : 'developer'} data.</div>`;
 
     const leaderboardHTML = `
     <div class="an-lb-grid">
@@ -2616,8 +2661,8 @@ function renderAnalytics() {
         </div>
         <div class="an-section card-light">
             <div class="an-section-header">
-                <div class="an-section-title">Developer Velocity</div>
-                <div class="an-section-sub">Avg progress on active projects</div>
+                <div class="an-section-title">${(typeof isContentCreatorWorkspace === 'function' && isContentCreatorWorkspace()) ? 'Content Creator Velocity' : 'Developer Velocity'}</div>
+                <div class="an-section-sub">Avg progress on active ${(typeof isContentCreatorWorkspace === 'function' && isContentCreatorWorkspace()) ? 'campaigns' : 'projects'}</div>
             </div>
             ${devRows}
         </div>
@@ -3149,13 +3194,17 @@ function computeMetricsFromMaster(p) {
     const done = Math.max(0, parseInt(String(p.completed_pages ?? 0), 10) || 0);
     const st = normalizeStage(p.stage || '');
     const total = totalRows > 0 ? totalRows : 1;
-    const live = Math.min(done, total);
-    const pending = ['Backlog', 'Planning'].includes(st) ? Math.min(1, Math.max(total - live, 0) || 1) : 0;
+    // ClickUp tasks often have completed_pages=0 even when status is Live — trust stage.
+    let live = Math.min(done, total);
+    if (st === 'Live' && live < 1) live = Math.min(1, total);
+    const pending = ['Backlog', 'Planning'].includes(st)
+        ? Math.min(1, Math.max(total - live, 0) || (live ? 0 : 1))
+        : 0;
     const inprog = Math.max(0, total - live - pending);
 
     return {
         total,
-        live: live || (st === 'Live' ? 1 : 0),
+        live,
         inprog,
         pending,
         avgPct: projectDisplayProgress(p),
@@ -3943,7 +3992,7 @@ function renderIntelligence() {
     }).join('') : `<div class="intel-empty">Nobody is scheduled to roll off projects in the next 30 days.</div>`;
 
     const roles = cap.roles || {};
-    const intelRoles = ['Developer', 'QA', 'BA', 'Owner', 'Page owner'];
+    const intelRoles = typeof getIntelRoles === 'function' ? getIntelRoles() : ['Developer', 'QA', 'BA', 'Owner', 'Page owner'];
     const heatHTML = intelRoles.map(role => {
         const r = roles[role];
         if (!r || !r.weeks?.length) return '';
@@ -4359,7 +4408,7 @@ function renderPerformance() {
 
                 <section class="perf-doc-block">
                     <h2 class="perf-section-title">Ownership</h2>
-                    <p class="perf-section-desc">Who is carrying the project — watch for over-concentration (${brief.concentrationPct}% top contributor).</p>
+                    <p class="perf-section-desc">Team of ${brief.people} — top contributor at ${brief.concentrationPct}%; full breakdown below.</p>
                     <div class="perf-owner-list">${ownerRows}</div>
                 </section>
 

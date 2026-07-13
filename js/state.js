@@ -193,7 +193,7 @@ const AppState = {
         const liveByMonth = {};
         units.filter(p => p.actual_live_date).forEach(p => {
             const date = parseSmartDate(p.actual_live_date);
-            if (!isNaN(date)) {
+            if (!isNaN(date.getTime())) {  // Bug #6 fix: use .getTime() — consistent with rest of codebase
                 const month = date.toLocaleString('default', { month: 'short' });
                 liveByMonth[month] = (liveByMonth[month] || 0) + 1;
             }

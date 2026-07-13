@@ -1079,6 +1079,21 @@ const App = {
         if (icon) icon.classList.toggle('res-expand-icon--open', !isOpen);
     },
 
+    /** Expand / shrink scheduling-conflict pairs (Show more ↔ Shrink). */
+    toggleConflictCard(cardId, hiddenCount) {
+        const more = document.getElementById(cardId + '-more');
+        const btn  = document.getElementById(cardId + '-btn');
+        if (!more || !btn) return;
+        const open = more.hasAttribute('hidden');
+        if (open) more.removeAttribute('hidden');
+        else more.setAttribute('hidden', '');
+        btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+        btn.classList.toggle('res-cfl-toggle--open', open);
+        const n = hiddenCount || more.querySelectorAll('.res-cfl-pair').length;
+        const moreEl = btn.querySelector('.res-cfl-toggle__more');
+        if (moreEl) moreEl.textContent = 'Show ' + n + ' more';
+    },
+
     /** Switch the People section between 'table' (default) and 'cards' (original). */
     setResPeopleView(mode) {
         const tableEl = document.getElementById('res-people-table-view');

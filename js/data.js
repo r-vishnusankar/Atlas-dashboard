@@ -242,6 +242,29 @@ function splitAssigneeNames(raw) {
     return String(raw || '').split(/[,;\n]+/).map(s => s.trim()).filter(Boolean);
 }
 
+/** Unique team members from owner, developer, QA, BA, page owner (sheet columns). */
+function projectTeamMembers(project, max = 6) {
+    const fields = [
+        project?.owner,
+        project?.developer,
+        project?.qa_engineer,
+        project?.ba,
+        project?.page_owner,
+    ];
+    const names = [];
+    const seen = new Set();
+    for (const raw of fields) {
+        for (const n of splitAssigneeNames(raw)) {
+            if (!isValidResourceName(n)) continue;
+            const key = n.toLowerCase();
+            if (seen.has(key)) continue;
+            seen.add(key);
+            names.push(n);
+        }
+    }
+    return max ? names.slice(0, max) : names;
+}
+
 /** Names that must not appear in the resource / availability map */
 function isValidResourceName(name) {
     const n = String(name || '').trim();
@@ -411,6 +434,20 @@ function computeAlerts(projects) {
                     target: pred.target,
                     predProgress: pred.progress,
                 });
+            } else if (
+                // Bug #5 fix: 0% progress + imminent deadline → at_risk (prediction returns null for 0% progress)
+                featureOn('AT_RISK_ZERO_PROGRESS')
+                && projectDisplayProgress(p) <= 0
+                && releaseSoon
+                && !postLive
+            ) {
+                at_risk.push({
+                    ...enriched,
+                    diffDays: 0,
+                    projected: new Date(today.getTime() + threshold * 86400000),
+                    target: release,
+                    predProgress: 0,
+                });
             } else if (releaseSoon && !postLive) {
                 upcoming.push(enriched);
             }
@@ -545,8 +582,54 @@ function clickUpAssigneeName(assignees, index) {
     return String(a.username || a.email || a.name || '').trim();
 }
 
+/** All valid assignee display names from a ClickUp assignees array. */
+function clickUpAllAssigneeNames(assignees) {
+    if (!Array.isArray(assignees) || !assignees.length) return [];
+    const out = [];
+    const seen = new Set();
+    assignees.forEach(a => {
+        const n = String(a?.username || a?.email || a?.name || '').trim();
+        if (!isValidResourceName(n)) return;
+        const key = n.toLowerCase();
+        if (seen.has(key)) return;
+        seen.add(key);
+        out.push(n);
+    });
+    return out;
+}
+
 function isClickUpWorkspace(ws) {
     return !!(ws && ws.integrationType === 'clickup');
+}
+
+/**
+ * Digital Marketing (and similar ClickUp workspaces): all people are Content Creators.
+ * Streak / Sheets keep engineering roles (Developer, QA, BA, …).
+ */
+function isContentCreatorWorkspace(ws) {
+    const w = ws || (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
+    if (w.roleModel === 'content_creator' || w.peopleModel === 'content_creators') return true;
+    if (w.id === 'digital_marketing') return true;
+    return false;
+}
+
+function getContentCreatorRoleName(ws) {
+    const w = ws || (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
+    return (w.contentCreatorRole && String(w.contentCreatorRole).trim()) || 'Content Creator';
+}
+
+/** Roles used by Resource Intelligence / capacity for the active workspace. */
+function getIntelRoles(ws) {
+    if (isContentCreatorWorkspace(ws)) {
+        return [getContentCreatorRoleName(ws)];
+    }
+    return ['Developer', 'QA', 'BA', 'Owner', 'Page owner'];
+}
+
+/** Primary work role for assignment suggestions (Developer vs Content Creator). */
+function getPrimaryWorkRole(ws) {
+    if (isContentCreatorWorkspace(ws)) return getContentCreatorRoleName(ws);
+    return 'Developer';
 }
 
 /** Streak uses STAGE_FLOW; ClickUp workspaces may define clickupStageFlow. */
@@ -696,6 +779,8 @@ function mapClickUpTaskToProject(task, ws) {
         ? 'on_track'
         : normalizeStatus(statusRaw || 'on_track');
     
+    const creatorMode = isContentCreatorWorkspace(workspace);
+    const allAssignees = clickUpAllAssigneeNames(task.assignees);
     let owner = 'Unassigned';
     let developer = 'Unassigned';
     let qa_engineer = 'Unassigned';
@@ -710,7 +795,14 @@ function mapClickUpTaskToProject(task, ws) {
     let tags = (task.tags || []).map(t => t.name || t);
     let customHealth = '';
 
-    if (task.assignees && task.assignees.length > 0) {
+    if (creatorMode) {
+        // All ClickUp assignees are Content Creators — store joined names in developer
+        // so existing analytics/resource paths that read `developer` keep working.
+        owner = allAssignees[0] || 'Unassigned';
+        developer = allAssignees.length ? allAssignees.join(', ') : 'Unassigned';
+        qa_engineer = '—';
+        ba = '—';
+    } else if (task.assignees && task.assignees.length > 0) {
         owner = clickUpAssigneeName(task.assignees, 0) || 'Unassigned';
         developer = clickUpAssigneeName(task.assignees, 1) || 'Unassigned';
         qa_engineer = clickUpAssigneeName(task.assignees, 2) || 'Unassigned';
@@ -724,11 +816,11 @@ function mapClickUpTaskToProject(task, ws) {
 
             if (fname === 'owner' || fname === 'pm') {
                 owner = String(val);
-            } else if (fname === 'developer' || fname === 'dev') {
+            } else if (!creatorMode && (fname === 'developer' || fname === 'dev')) {
                 developer = String(val);
-            } else if (fname === 'qa' || fname === 'qaengineer') {
+            } else if (!creatorMode && (fname === 'qa' || fname === 'qaengineer')) {
                 qa_engineer = String(val);
-            } else if (fname === 'ba' || fname === 'businessanalyst') {
+            } else if (!creatorMode && (fname === 'ba' || fname === 'businessanalyst')) {
                 ba = String(val);
             } else if (fname === 'client' || fname === 'pagename') {
                 if (val) client = String(val);
@@ -781,7 +873,7 @@ function mapClickUpTaskToProject(task, ws) {
         release_date,
         priority: normalizePriority(priority),
         ba,
-        page_owner: owner,
+        page_owner: featureOn('CLICKUP_PAGE_OWNER_FIX') ? '—' : owner,  // Bug #2 fix: avoid double-counting in resource map
         cms: '—',
         developer,
         qa_engineer,
@@ -1109,8 +1201,12 @@ function computeRoadmapMetrics(p, hlist, rows) {
 
         const ps = idxProgress >= 0 ? roadmapCell(row, idxProgress) : '';
         const n = parseInt(ps, 10);
-        pctSum += (!isNaN(n)) ? Math.min(100, Math.max(0, n)) : 0;
-        pctN += 1;
+        // Bug #1 fix: only count rows with a real progress value — blank rows were pulling
+        // the average toward 0 (pctN incremented even when ps was empty).
+        if (!isNaN(n) || !featureOn('SIBLING_AVG_PCT_EXCLUDE_BLANK')) {
+            pctSum += !isNaN(n) ? Math.min(100, Math.max(0, n)) : 0;
+            pctN += 1;
+        }
     });
 
     const total = pctN;
@@ -1735,6 +1831,9 @@ function mapClickUpSubtaskToPage(subtask, parent, ws) {
     const clPct = clickUpChecklistProgress(subtask.checklists);
     if (clPct != null && !completed) progress = clPct;
 
+    const creatorMode = isContentCreatorWorkspace(ws);
+    const allAssignees = clickUpAllAssigneeNames(subtask.assignees);
+
     return {
         page:      subtask.name || 'Subtask',
         stage,
@@ -1744,8 +1843,11 @@ function mapClickUpSubtaskToPage(subtask, parent, ws) {
         release,
         live,
         progress,
-        developer: clickUpAssigneeName(subtask.assignees, 0),
-        qa:        clickUpAssigneeName(subtask.assignees, 1),
+        developer: creatorMode
+            ? (allAssignees.length ? allAssignees.join(', ') : '')
+            : clickUpAssigneeName(subtask.assignees, 0),
+        qa:        creatorMode ? '' : clickUpAssigneeName(subtask.assignees, 1),
+        creators:  creatorMode ? allAssignees : undefined,
         completed,
         stageExpectations: [],
         stageDurations: durations,
@@ -1765,15 +1867,21 @@ function computeClickUpRoadmapFromPages(parent, pages) {
     let inprog = 0;
     let pending = 0;
     let pctSum = 0;
+    let pctCountCU = 0;  // Bug #10 fix: separate denominator — only count subtasks with real progress
     pages.forEach(pg => {
         const st = normalizeStage(pg.stage || '');
         if (pg.completed || st === 'Live') live += 1;
         else if (st === 'Backlog' || st === 'Planning') pending += 1;
         else inprog += 1;
-        pctSum += pg.progress || 0;
+        // Bug #10 fix: exclude not-started subtasks (progress=0, not complete) from avg
+        // when flag is on; mirrors Bug #1 fix in computeRoadmapMetrics.
+        if (!featureOn('SIBLING_AVG_PCT_EXCLUDE_BLANK') || pg.completed || pg.progress > 0) {
+            pctSum += pg.progress || 0;
+            pctCountCU += 1;
+        }
     });
     const total = pages.length;
-    const avgPct = total ? Math.round(pctSum / total) : (parent.progress || 0);
+    const avgPct = pctCountCU > 0 ? Math.round(pctSum / pctCountCU) : (parent.progress || 0);
     const stageCounts = {};
     pages.forEach(pg => {
         const b = normalizeStage(pg.stage || '');
@@ -1787,8 +1895,10 @@ function computeClickUpRoadmapFromPages(parent, pages) {
     return { total, live, inprog, pending, avgPct, funnelStage };
 }
 
-function computeClickUpSubtaskAssignments(pages) {
+function computeClickUpSubtaskAssignments(pages, ws) {
     const out = [];
+    const creatorMode = isContentCreatorWorkspace(ws);
+    const creatorRole = getContentCreatorRoleName(ws);
     pages.forEach(pg => {
         const base = {
             page: pg.page,
@@ -1798,6 +1908,16 @@ function computeClickUpSubtaskAssignments(pages) {
             end: pg.completed ? (pg.live || pg.release) : pg.release,
             completed: pg.completed,
         };
+        if (creatorMode) {
+            const names = Array.isArray(pg.creators) && pg.creators.length
+                ? pg.creators
+                : splitAssigneeNames(pg.developer);
+            names.forEach(n => {
+                if (!isValidResourceName(n)) return;
+                out.push({ person: n, role: creatorRole, ...base });
+            });
+            return;
+        }
         if (isValidResourceName(pg.developer)) {
             out.push({ person: pg.developer, role: 'Developer', ...base });
         }
@@ -1844,7 +1964,7 @@ async function enrichClickUpWithSubtasks(projects, token, ws) {
             return;
         }
         const pages = computeClickUpSubtaskPages(subs, p, ws);
-        const assignments = computeClickUpSubtaskAssignments(pages);
+        const assignments = computeClickUpSubtaskAssignments(pages, ws);
         const rm = computeClickUpRoadmapFromPages(p, pages);
         list[idx].roadmap = {
             hasSibling: true,
@@ -2432,11 +2552,29 @@ function buildResourceMap(projects) {
         return covered;
     }
 
+    const creatorMode = isContentCreatorWorkspace();
+    const creatorRole = getContentCreatorRoleName();
+
     projects.forEach(p => {
         const sib = featureOn('SIBLING_RESOURCE_MAP')
             && p.roadmap?.hasSibling
             && Array.isArray(p.roadmap.assignments) && p.roadmap.assignments.length
             ? p.roadmap.assignments : null;
+
+        if (creatorMode) {
+            // Digital Marketing: every assignee is a Content Creator (no Owner/BA/Dev/QA split).
+            if (sib) {
+                const covered = pushSiblingAssignments(p, sib);
+                push(p.developer, creatorRole, p, covered);
+            } else {
+                push(p.developer, creatorRole, p);
+                // Fallback: if developer empty, still count primary owner as creator.
+                if (!isValidResourceName(p.developer) && isValidResourceName(p.owner)) {
+                    push(p.owner, creatorRole, p);
+                }
+            }
+            return;
+        }
 
         push(p.owner, 'Owner', p);
         push(p.ba,    'BA',    p);
@@ -2538,11 +2676,22 @@ function getAttentionWeights() {
     return CONFIG.ATTENTION_WEIGHTS || {};
 }
 
+/** Default engineering roles; prefer getIntelRoles() for workspace-aware lists. */
 const INTEL_ROLES = ['Developer', 'QA', 'BA', 'Owner', 'Page owner'];
 
 function getRoleCapacityMax(role) {
     const m = CONFIG.CAPACITY?.maxProjectsPerPerson || {};
     return m[role] != null ? m[role] : 2;
+}
+
+function getActiveIntelRoles() {
+    return typeof getIntelRoles === 'function' ? getIntelRoles() : INTEL_ROLES;
+}
+
+function getActiveIntakeConfig() {
+    const ws = (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
+    if (ws.intake && typeof ws.intake === 'object') return ws.intake;
+    return CONFIG.INTAKE || {};
 }
 
 /**
@@ -2666,13 +2815,14 @@ function computeRoleCapacityForecast(projects, resourceMap, horizons) {
         weeks.push(weekStartMonday(ws));
     }
 
+    const intelRoles = typeof getIntelRoles === 'function' ? getIntelRoles() : INTEL_ROLES;
     const rolePeople = {};
-    INTEL_ROLES.forEach(role => { rolePeople[role] = new Set(); });
+    intelRoles.forEach(role => { rolePeople[role] = new Set(); });
 
     Object.values(resourceMap).forEach(person => {
         person.assignments.forEach(a => {
             if (a.completed) return;
-            if (INTEL_ROLES.includes(a.role)) rolePeople[a.role].add(person.name);
+            if (intelRoles.includes(a.role)) rolePeople[a.role].add(person.name);
         });
     });
 
@@ -2681,7 +2831,7 @@ function computeRoleCapacityForecast(projects, resourceMap, horizons) {
     let shortageWeeks = 0;
     const freeingNext30 = [];
 
-    INTEL_ROLES.forEach(role => {
+    intelRoles.forEach(role => {
         const names = [...rolePeople[role]];
         const max = getRoleCapacityMax(role);
         const weekRows = weeks.map((weekStart, wi) => {
@@ -2778,7 +2928,9 @@ function computeBusinessIntakeCapacity(resourceMap) {
     }
 
     const today = startOfDay(new Date());
-    const intake = CONFIG.INTAKE || {};
+    const ws = (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
+    const intake = (ws.intake && typeof ws.intake === 'object') ? ws.intake : (CONFIG.INTAKE || {});
+    const intelRoles = typeof getIntelRoles === 'function' ? getIntelRoles(ws) : INTEL_ROLES;
     const byHorizon = { 30: {}, 60: {}, 90: {} };
 
     function countFreeInRole(role, horizonDays) {
@@ -2806,7 +2958,7 @@ function computeBusinessIntakeCapacity(resourceMap) {
     }
 
     [30, 60, 90].forEach(days => {
-        INTEL_ROLES.forEach(role => {
+        intelRoles.forEach(role => {
             byHorizon[days][role] = countFreeInRole(role, days);
         });
     });
@@ -2815,18 +2967,20 @@ function computeBusinessIntakeCapacity(resourceMap) {
         const spec = intake[tierKey];
         if (!spec) return 0;
         const horizon = spec.days || 30;
-        const counts = (spec.roles || ['Developer']).map(r => byHorizon[horizon][r] || 0);
+        const fallbackRole = typeof getPrimaryWorkRole === 'function' ? getPrimaryWorkRole(ws) : 'Developer';
+        const counts = (spec.roles || [fallbackRole]).map(r => byHorizon[horizon][r] || 0);
         return Math.min(...counts);
     }
 
+    const primaryRole = typeof getPrimaryWorkRole === 'function' ? getPrimaryWorkRole(ws) : 'Developer';
     return {
         small: slotCount('small'),
         medium: slotCount('medium'),
         large: slotCount('large'),
         byHorizon,
         narrativeInputs: {
-            devFree30: byHorizon[30].Developer || 0,
-            qaFree60: byHorizon[60].QA || 0,
+            devFree30: byHorizon[30].Developer || byHorizon[30][primaryRole] || 0,
+            qaFree60: byHorizon[60].QA || byHorizon[60][primaryRole] || 0,
         },
     };
 }
