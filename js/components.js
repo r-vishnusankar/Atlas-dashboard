@@ -22,8 +22,21 @@ const Icons = {
     music: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>',
     globe: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>',
     handshake: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 12v3a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-3"/><path d="M12 17v-5"/><path d="M8 8l4-4 4 4"/></svg>',
-    checkIcon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>'
+    checkIcon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>',
+    alert: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
+    users: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
+    calendar: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>',
+    trendUp: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>',
+    briefcase: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/></svg>',
+    checkCircle: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>',
+    zap: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>',
+    pause: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>',
 };
+
+/** Section title with a professional SVG icon (no emoji). */
+function sectionTitleWithIcon(iconSvg, label) {
+    return `<span class="ui-title-with-icon">${iconSvg}<span>${label}</span></span>`;
+}
 
 const PASTELS = ['bg-peach', 'bg-violet', 'bg-mint', 'bg-blue', 'bg-yellow'];
 
@@ -141,12 +154,11 @@ function alertCardReason(p, bucket) {
                 secondary: `Target: ${formatDateShort(p.release_date)}`,
             };
         case 'at_risk': {
-            const proj = p.projected || null;
             const tgt = p.target || (p.release_date ? parseSmartDate(p.release_date) : null);
             const pct = p.predProgress != null ? p.predProgress : projectDisplayProgress(p);
             return {
-                primary: p.diffDays != null ? `+${p.diffDays}d projected slip` : '—',
-                secondary: `Proj ${fmtShort(proj)} vs ${fmtShort(tgt)} · ${pct}%`,
+                primary: tgt && !isNaN(tgt.getTime()) ? `Target ${fmtShort(tgt)}` : 'Likely miss',
+                secondary: `${pct}% complete`,
             };
         }
         case 'stalled': {
@@ -212,35 +224,35 @@ function buildSmartInsights() {
 
     // 1. Overdue
     if (alerts.overdue.length) {
-        insights.push({ icon: '🚨', count: alerts.overdue.length, text: `project${alerts.overdue.length > 1 ? 's' : ''} overdue`, severity: 'critical', onclick: "App.navigate('alerts')", detail: alerts.overdue[0]?.name });
+        insights.push({ icon: Icons.alert, count: alerts.overdue.length, text: `project${alerts.overdue.length > 1 ? 's' : ''} overdue`, severity: 'critical', onclick: "App.navigate('alerts')", detail: alerts.overdue[0]?.name });
     }
 
     // 2. Releasing soon (alert engine)
     if (alerts.upcoming.length) {
-        insights.push({ icon: '📅', count: alerts.upcoming.length, text: `releasing soon`, severity: 'warning', onclick: "App.navigate('alerts')", detail: alerts.upcoming[0]?.name });
+        insights.push({ icon: Icons.calendar, count: alerts.upcoming.length, text: `releasing soon`, severity: 'warning', onclick: "App.navigate('alerts')", detail: alerts.upcoming[0]?.name });
     }
 
     // 2b. Predictive likely miss (alert engine)
     if (alerts.at_risk.length) {
-        insights.push({ icon: '⚠️', count: alerts.at_risk.length, text: `likely to miss deadline`, severity: 'warning', onclick: "App.navigate('alerts')", detail: alerts.at_risk[0]?.name });
+        insights.push({ icon: Icons.alert, count: alerts.at_risk.length, text: `likely to miss deadline`, severity: 'warning', onclick: "App.navigate('alerts')", detail: alerts.at_risk[0]?.name });
     }
 
     // 3. Resource conflicts
     const conflictCount = Object.values(resMap).filter(p => p.conflicts.length > 0).length;
     if (conflictCount) {
-        insights.push({ icon: '⚡', count: conflictCount, text: `resource conflict${conflictCount > 1 ? 's' : ''}`, severity: 'warning', onclick: "App.navigate('resources')", detail: 'Check bandwidth' });
+        insights.push({ icon: Icons.zap, count: conflictCount, text: `resource conflict${conflictCount > 1 ? 's' : ''}`, severity: 'warning', onclick: "App.navigate('resources')", detail: 'Check bandwidth' });
     }
 
     // 4. Recently shipped
     const lastShipped = computeOverviewDateMetrics(all, today).recentlyLive[0];
     if (lastShipped) {
         const { badge, badgeColor } = getLaunchTimingBadge(lastShipped, today);
-        insights.push({ icon: '✅', count: null, text: `last shipped${badge ? ' · ' + badge : ''}`, severity: 'success', onclick: `App.handleCardClick('${lastShipped.id}')`, detail: lastShipped.name });
+        insights.push({ icon: Icons.checkCircle, count: null, text: `last shipped${badge ? ' · ' + badge : ''}`, severity: 'success', onclick: `App.handleCardClick('${lastShipped.id}')`, detail: lastShipped.name });
     }
 
     // 5. Stalled projects
     if (alerts.stalled?.length) {
-        insights.push({ icon: '⏸', count: alerts.stalled.length, text: `stalled project${alerts.stalled.length > 1 ? 's' : ''}`, severity: 'info', onclick: "App.navigate('alerts')", detail: 'No recent progress' });
+        insights.push({ icon: Icons.pause, count: alerts.stalled.length, text: `stalled project${alerts.stalled.length > 1 ? 's' : ''}`, severity: 'info', onclick: "App.navigate('alerts')", detail: 'No recent progress' });
     }
 
     // 6. Stage bottleneck (stage with most alert-flagged projects)
@@ -251,7 +263,7 @@ function buildSmartInsights() {
     });
     const bottleneck = Object.entries(stagePressure).sort((a, b) => b[1] - a[1])[0];
     if (bottleneck && bottleneck[1] >= 2) {
-        insights.push({ icon: '🔴', count: null, text: `bottleneck: ${bottleneck[0]}`, severity: 'critical', onclick: "App.navigate('pipeline')", detail: `${bottleneck[1]} issues` });
+        insights.push({ icon: Icons.alert, count: null, text: `bottleneck: ${bottleneck[0]}`, severity: 'critical', onclick: "App.navigate('pipeline')", detail: `${bottleneck[1]} issues` });
     }
 
     // 7. Avg progress this month
@@ -372,9 +384,13 @@ function renderInsightStrip() {
 
     const cards = insights.map(ins => {
         const c = colorMap[ins.severity] || colorMap.neutral;
+        const iconHtml = ins.icon
+            ? `<div class="ov-insight-icon" style="color:${c.text}" aria-hidden="true">${ins.icon}</div>`
+            : '';
         return `
         <div class="ov-insight-card" style="background:${c.bg};border-color:${c.border};"
              onclick="${ins.onclick}" title="${escapeHtml(ins.detail || '')}">
+            ${iconHtml}
             <div class="ov-insight-body">
                 ${ins.count !== null ? `<div class="ov-insight-count" style="color:${c.text}">${ins.count}</div>` : ''}
                 <div class="ov-insight-text">${ins.text}</div>
@@ -422,10 +438,10 @@ function renderAtRiskNow() {
         const pOffset = +(CIRC_SM * (1 - prog / 100)).toFixed(1);
         const reason = alertCardReason(p, bucket);
 
-        let daysText = reason.primary;
+        // Hide projected slip on Needs Attention cards (unreliable for low-progress projects).
+        let daysText = bucket === 'at_risk' ? '' : reason.primary;
         let daysColor = 'var(--text-muted)';
         if (bucket === 'overdue') daysColor = '#D93025';
-        else if (bucket === 'at_risk') daysColor = '#F59E0B';
         else if (bucket === 'stalled') daysColor = '#3B82F6';
         else if (p.daysToRelease != null) {
             daysColor = p.daysToRelease < 0 ? '#D93025' : p.daysToRelease <= 3 ? '#F59E0B' : 'var(--text-muted)';
@@ -514,17 +530,17 @@ function renderUpcomingLaunches() {
 }
 
 function renderStageFunnel() {
+    const ws = (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
     const funnel = typeof getFunnelStageCounts === 'function'
         ? getFunnelStageCounts()
-        : { stages: ['Planning','Development','QA','Release','Live'], counts: AppState.stageCounts, overdueByStage: {}, alertByStage: {} };
+        : { stages: getFunnelStages ? getFunnelStages(ws) : ['Planning','Development','QA','Release','Live'], counts: AppState.stageCounts, overdueByStage: {}, alertByStage: {}, total: 0 };
     const { stages, counts, overdueByStage, alertByStage } = funnel;
-    const stageColors = {
-        'Planning':    '#8B5CF6',
-        'Development': '#1A73E8',
-        'QA':          '#F9AB00',
-        'Release':     '#EF4444',
-        'Live':        '#1E8E3E',
-    };
+    const stageColors = typeof getFunnelStageColors === 'function'
+        ? getFunnelStageColors(ws)
+        : {
+            Planning: '#8B5CF6', Development: '#1A73E8', QA: '#F9AB00',
+            Release: '#EF4444', Live: '#1E8E3E',
+        };
     const maxCount = Math.max(...stages.map(s => counts[s] || 0), 1);
 
     const rows = stages.map(s => {
@@ -533,26 +549,36 @@ function renderStageFunnel() {
         const alertN   = alertByStage[s] || 0;
         const pct      = Math.round((count / maxCount) * 100);
         const color    = stageColors[s] || 'var(--accent-primary)';
+        const safeStage = String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
         return `
-        <div class="ov-funnel-row" onclick="App.analyticsDrill('stage','${s}')">
+        <div class="ov-funnel-row" onclick="App.analyticsDrill('stage','${safeStage}')">
             <div class="ov-funnel-label">${s}</div>
             <div class="ov-funnel-track">
                 <div class="ov-funnel-fill" style="width:0%;background:${color};" data-fill="${pct}"></div>
             </div>
             <div class="ov-funnel-right">
                 <span class="ov-funnel-count">${count}</span>
-                ${overdueN ? `<span class="ov-funnel-chip ov-funnel-chip--red">${overdueN}!</span>` : ''}
-                ${alertN ? `<span class="ov-funnel-chip ov-funnel-chip--amber">${alertN}⚠</span>` : ''}
+                ${overdueN ? `<span class="ov-funnel-chip ov-funnel-chip--red">${overdueN}</span>` : ''}
+                ${alertN ? `<span class="ov-funnel-chip ov-funnel-chip--amber">${alertN}</span>` : ''}
             </div>
         </div>`;
     }).join('');
 
+    const unitLabel = typeof deliveryUnitWord === 'function' ? deliveryUnitWord(true) : 'pages';
+    const isClickUp = typeof isClickUpWorkspace === 'function' && isClickUpWorkspace(ws);
+    const emptyHint = isClickUp
+        ? 'Tasks appear by ClickUp status. Add subtasks for deliverable-level funnel counts.'
+        : 'No linked delivery pages yet.';
+    const body = funnel.total
+        ? rows
+        : `<div class="ov-funnel-empty">${emptyHint}</div>`;
+
     return `
     <div class="ov-section-header">
         <h2 class="ov-section-title">Stage Funnel</h2>
-        <span class="ov-section-badge">${funnel.total || 0} ${typeof deliveryUnitWord === 'function' ? deliveryUnitWord(true) : 'pages'}</span>
+        <span class="ov-section-badge">${funnel.total || 0} ${unitLabel}</span>
     </div>
-    <div class="card-light ov-funnel-card">${rows}</div>`;
+    <div class="card-light ov-funnel-card${funnel.total ? '' : ' ov-funnel-card--empty'}">${body}</div>`;
 }
 
 function renderTeamStatusGrid() {
@@ -575,7 +601,7 @@ function renderTeamStatusGrid() {
         const rEntry  = resMap[o.name];
         const hasConflict = rEntry && rEntry.conflicts.length > 0;
         const ringColor   = hasConflict ? '#D93025' : o.delayed ? '#F9AB00' : '#1E8E3E';
-        const ringLabel   = hasConflict ? '⚡ conflict' : o.delayed ? `${o.delayed} delayed` : `${o.total} active`;
+        const ringLabel   = hasConflict ? 'Conflict' : o.delayed ? `${o.delayed} delayed` : `${o.total} active`;
 
         return `
         <div class="ov-person-chip" onclick="App.setFilterAndNavigate('owner','${escapeHtml(o.name)}','projects')"
@@ -1347,7 +1373,7 @@ function renderAlerts() {
 
     html += mapList(sortAlertsByAttention(overdue), 'overdue', 'Overdue', 'Past their release date and not yet live.', '#EF4444', overdueIcon, 'bg-red');
     const soonDays = CONFIG.UPCOMING_DAYS_THRESHOLD ?? 7;
-    html += mapList(sortAlertsByAttention(at_risk), 'at_risk', 'Likely to miss', 'At current progress rate, projected finish is after the target release date.', '#F59E0B', atRiskIcon, 'bg-yellow');
+    html += mapList(sortAlertsByAttention(at_risk), 'at_risk', 'Likely to miss', 'Projects flagged as likely to miss their target release date based on progress and timeline.', '#F59E0B', atRiskIcon, 'bg-yellow');
     html += mapList(sortAlertsByAttention(stalled), 'stalled', 'Stalled', `Under ${CONFIG.STALLED_PROGRESS_THRESHOLD ?? 30}% progress despite being started ${CONFIG.STALLED_DAYS_THRESHOLD ?? 30}+ days ago.`, '#3B82F6', stalledIcon, 'bg-blue');
     html += mapList(sortAlertsByAttention(upcoming), 'upcoming', `Releasing soon (next ${soonDays} days)`, 'On track but release date is approaching.', '#EC4899', upcomingIcon, 'bg-violet');
 
@@ -1520,7 +1546,7 @@ function renderAvailPopoverContent() {
         <div class="res-pop-row">
             <div class="res-pop-avatar" style="background:${avc}">${init}</div>
             <div class="res-pop-info">
-                <div class="res-pop-name">${escapeHtml(p.name)}${hasConflict ? ' <span class="res-pop-cfl">⚠</span>' : ''}</div>
+                <div class="res-pop-name">${escapeHtml(p.name)}${hasConflict ? ` <span class="res-pop-cfl ui-inline-icon" aria-label="Conflict">${Icons.alert}</span>` : ''}</div>
                 <div class="res-pop-bar-wrap"><div class="res-pop-bar" style="width:${barW}%"></div></div>
             </div>
             <span class="res-pop-chip ${avail.popClass}">${avail.label}</span>
@@ -1575,7 +1601,7 @@ function renderPeopleTable(people, today, WINDOW, statusColor, statusLabel, fmtD
                 <span class="res-tbl-pill-name">${escapeHtml(a.projectName)}</span>
                 <span class="res-tbl-pill-role">${escapeHtml(a.role)}</span>
                 ${daysStr ? `<span class="res-tbl-pill-days ${overdue ? 'res-tbl-pill-days--over' : ''}">${daysStr}</span>` : ''}
-                ${isConflict ? `<span class="res-tbl-pill-warn">⚠</span>` : ''}
+                ${isConflict ? `<span class="res-tbl-pill-warn ui-inline-icon" aria-label="Conflict">${Icons.alert}</span>` : ''}
             </div>`;
         }).join('');
 
@@ -1590,7 +1616,7 @@ function renderPeopleTable(people, today, WINDOW, statusColor, statusLabel, fmtD
                 <div class="res-tbl-avatar" style="background:${avc}">${init}</div>
                 <div class="res-tbl-name-wrap">
                     <div class="res-tbl-name">${escapeHtml(p.name)}</div>
-                    <div class="res-tbl-counts">${p.activeCount} active · ${completedCount} done${hasConflict ? ` · <span style="color:#D93025;font-weight:700;">⚠ ${p.conflicts.length} conflict</span>` : ''}</div>
+                    <div class="res-tbl-counts">${p.activeCount} active · ${completedCount} done${hasConflict ? ` · <span style="color:#D93025;font-weight:700;display:inline-flex;align-items:center;gap:4px;"><span class="ui-inline-icon">${Icons.alert}</span>${p.conflicts.length} conflict</span>` : ''}</div>
                 </div>
             </td>
             <!-- Load -->
@@ -1779,7 +1805,7 @@ function renderResources() {
                 <div class="res-proj-meta">
                     <div class="res-proj-top">
                         <span class="res-proj-name" onclick="App.handleCardClick('${a.projectId}')">${escapeHtml(a.projectName)}</span>
-                        ${isConflict && !a.completed ? `<span class="res-proj-conflict-badge">⚠ conflict</span>` : ''}
+                        ${isConflict && !a.completed ? `<span class="res-proj-conflict-badge"><span class="ui-inline-icon">${Icons.alert}</span> conflict</span>` : ''}
                         ${a.completed ? `<span class="res-proj-done-badge">✓ live</span>` : ''}
                     </div>
                     <div class="res-proj-bottom">
@@ -1812,7 +1838,7 @@ function renderResources() {
                         <span>${p.activeCount} active project${p.activeCount !== 1 ? 's' : ''}</span>
                         <span class="res-person-sep">·</span>
                         <span>${sorted.filter(a => a.completed).length} completed</span>
-                        ${hasConflict ? `<span class="res-person-sep">·</span><span style="color:#D93025;font-weight:700;">⚠ ${p.conflicts.length} conflict${p.conflicts.length > 1 ? 's' : ''}</span>` : ''}
+                        ${hasConflict ? `<span class="res-person-sep">·</span><span style="color:#D93025;font-weight:700;display:inline-flex;align-items:center;gap:4px;"><span class="ui-inline-icon">${Icons.alert}</span>${p.conflicts.length} conflict${p.conflicts.length > 1 ? 's' : ''}</span>` : ''}
                     </div>
                 </div>
                 <div style="display:flex; align-items:center; gap:8px; flex-shrink:0;">
@@ -1928,7 +1954,7 @@ function renderResources() {
                 <div style="font-size:13px;color:var(--text-muted);">${people.length} people · ${AppState.allProjects.filter(p=>normalizeStage(p.stage||'')!=='Live').length} active projects${intelligenceEnabled() ? ' · projected ends when forecast available' : ''}</div>
             </div>
             ${conflictCount
-                ? `<div style="background:rgba(217,48,37,0.1);border:1px solid rgba(217,48,37,0.3);border-radius:12px;padding:8px 16px;font-size:13px;font-weight:700;color:#D93025;">⚠ ${conflictCount} scheduling conflict${conflictCount>1?'s':''} detected</div>`
+                ? `<div style="background:rgba(217,48,37,0.1);border:1px solid rgba(217,48,37,0.3);border-radius:12px;padding:8px 16px;font-size:13px;font-weight:700;color:#D93025;display:inline-flex;align-items:center;gap:8px;"><span class="ui-inline-icon">${Icons.alert}</span>${conflictCount} scheduling conflict${conflictCount>1?'s':''} detected</div>`
                 : `<div style="background:rgba(30,142,62,0.1);border:1px solid rgba(30,142,62,0.2);border-radius:12px;padding:8px 16px;font-size:13px;font-weight:700;color:#1E8E3E;">✓ No conflicts detected</div>`}
         </div>
 
@@ -1941,7 +1967,7 @@ function renderResources() {
 
         ${conflictCount ? `
         <section class="res-section">
-            <h3 class="res-section__title">⚠ Scheduling Conflicts</h3>
+            <h3 class="res-section__title">${sectionTitleWithIcon(Icons.alert, 'Scheduling Conflicts')}</h3>
             ${conflictHTML}
         </section>` : ''}
 
@@ -2068,7 +2094,7 @@ function renderTimeline(projects) {
         // Fix 6: show "outside window" hint for fully invisible bars
         const outOfRange = !inRange && (safeEnd < startRange || safeStart > endRange);
         const rangeHint  = outOfRange
-            ? `<span style="font-size:10px;color:var(--text-muted);padding-left:8px;">📅 ${safeStart < startRange ? 'before' : 'after'} window</span>`
+            ? `<span style="font-size:10px;color:var(--text-muted);padding-left:8px;display:inline-flex;align-items:center;gap:4px;"><span class="ui-inline-icon">${Icons.calendar}</span>${safeStart < startRange ? 'before' : 'after'} window</span>`
             : '';
 
         const isLive = normalizeStage(p.stage || '') === 'Live';
@@ -2189,7 +2215,7 @@ function renderTimelineCalendar(projects) {
             ].slice(0,4).join('');
 
             const tooltip = dayEvts.map(e =>
-                `${e.type === 'live' ? '🟢' : e.type === 'release' ? '🔴' : '🔵'} ${e.project.name}`
+                `${e.type === 'live' ? 'Live' : e.type === 'release' ? 'Release' : 'Start'} · ${e.project.name}`
             ).join('&#10;');
 
             const clickAttr = hasEvt
@@ -3193,11 +3219,13 @@ function computeMetricsFromMaster(p) {
     const totalRows = Math.max(0, parseInt(String(p.total_pages ?? 0), 10) || 0);
     const done = Math.max(0, parseInt(String(p.completed_pages ?? 0), 10) || 0);
     const st = normalizeStage(p.stage || '');
+    const funnel = p.funnelStage || (typeof projectFunnelStage === 'function' ? projectFunnelStage(p) : st);
     const total = totalRows > 0 ? totalRows : 1;
     // ClickUp tasks often have completed_pages=0 even when status is Live — trust stage.
     let live = Math.min(done, total);
-    if (st === 'Live' && live < 1) live = Math.min(1, total);
-    const pending = ['Backlog', 'Planning'].includes(st)
+    if ((st === 'Live' || funnel === 'Live') && live < 1) live = Math.min(1, total);
+    const pendingStages = ['Backlog', 'Planning', 'Brief'];
+    const pending = (pendingStages.includes(st) || pendingStages.includes(funnel))
         ? Math.min(1, Math.max(total - live, 0) || (live ? 0 : 1))
         : 0;
     const inprog = Math.max(0, total - live - pending);
@@ -3211,7 +3239,15 @@ function computeMetricsFromMaster(p) {
     };
 }
 
-function buildRoadmapLegendHTML() {
+function buildRoadmapLegendHTML(opts = {}) {
+    if (opts.clickup) {
+        return `
+    <div class="streak-roadmap-legend" aria-hidden="true">
+        <span><i class="streak-leg streak-leg--live"></i> Live</span>
+        <span><i class="streak-leg streak-leg--dev"></i> In progress</span>
+        <span><i class="streak-leg streak-leg--design"></i> Brief / plan</span>
+    </div>`;
+    }
     return `
     <div class="streak-roadmap-legend" aria-hidden="true">
         <span><i class="streak-leg streak-leg--live"></i> Ship / live</span>
@@ -3344,6 +3380,7 @@ function renderClickUpDeliverablesTableHTML(pages) {
     }
     const tbody = pages.map((pg, i) => {
         const pct = pg.progress || 0;
+        const stageLabel = pg.funnelStage || pg.rawStage || pg.stage || '—';
         const normalized = normalizeStage(pg.stage || '');
         const bar = `
             <div class="streak-roadmap-progress">
@@ -3352,7 +3389,7 @@ function renderClickUpDeliverablesTableHTML(pages) {
                 </div>
                 <span class="streak-roadmap-progress-pct">${pct}%</span>
             </div>`;
-        const stPill = `<span class="stage-pill streak-roadmap-stage ${stageClass(normalized)}">${escapeHtml(pg.rawStage || pg.stage || '—')}</span>`;
+        const stPill = `<span class="stage-pill streak-roadmap-stage ${stageClass(normalized)}">${escapeHtml(stageLabel)}</span>`;
         const stat = pg.status
             ? `<span class="status-badge streak-roadmap-status ${siblingStatusKeyFromValue(pg.status)}">${escapeHtml(pg.status)}</span>`
             : '<span class="streak-roadmap-dash">—</span>';
@@ -3480,31 +3517,51 @@ function buildClickUpAsidePanels(p, detail, pages) {
 }
 
 function buildClickUpTaskSnapshot(p, detail) {
+    const stageLabel = p.funnelStage
+        || (typeof projectFunnelStage === 'function' ? projectFunnelStage(p) : null)
+        || p.rawStage
+        || p.stage
+        || '—';
+    const rawHint = (p.rawStage && String(p.rawStage).toLowerCase() !== String(stageLabel).toLowerCase())
+        ? ` (${p.rawStage})`
+        : '';
+    const creatorMode = typeof isContentCreatorWorkspace === 'function' && isContentCreatorWorkspace();
+    const peopleLabel = creatorMode
+        ? ((typeof getContentCreatorRoleName === 'function' ? getContentCreatorRoleName() : 'Content Creator'))
+        : 'Owner';
+    const peopleValue = creatorMode
+        ? (p.developer && p.developer !== 'Unassigned' ? p.developer : (p.owner || '—'))
+        : (p.owner || '—');
+
     const fields = [
         { label: 'Task ID', value: p.id },
         { label: 'Client', value: p.client || '—' },
-        { label: 'Stage', value: p.stage || '—' },
+        { label: 'Stage', value: `${stageLabel}${rawHint}` },
         { label: 'Status', value: statusLabel(p.status) },
         { label: 'Progress', value: `${projectDisplayProgress(p)}%` },
         { label: 'Due date', value: p.release_date ? formatDate(p.release_date) : '—' },
-        { label: 'Owner', value: p.owner || '—' },
-    ];
+        { label: peopleLabel, value: peopleValue },
+    ].filter(f => f.value && f.value !== '—');
+
     const cells = fields.map(f => `
-        <div class="streak-snapshot-cell">
+        <div class="streak-snapshot-field">
             <div class="streak-snapshot-label">${escapeHtml(f.label)}</div>
             <div class="streak-snapshot-value">${escapeHtml(f.value)}</div>
         </div>`).join('');
+
     let extra = '';
     if (detail.description || p.notes) {
-        extra += `<div class="streak-pd-devtrack-notes" style="margin-top:16px;">${escapeHtml(detail.description || p.notes)}</div>`;
+        extra += `<div class="streak-pd-devtrack-notes streak-snapshot-notes">${escapeHtml(detail.description || p.notes)}</div>`;
     }
-    if (detail.url) {
-        extra += `<p style="margin-top:12px;"><a href="${escapeHtml(detail.url)}" target="_blank" rel="noopener">Open in ClickUp ↗</a></p>`;
-    }
+
     return `
-    <div class="streak-snapshot-grid">${cells}</div>
-    ${extra}
-    <p class="streak-snapshot-hint">Add subtasks in ClickUp to unlock deliverable-level funnel and analytics.</p>`;
+    <div class="streak-snapshot-block">
+        <div class="streak-snapshot-grid">${cells}</div>
+        ${extra}
+        <div class="streak-snapshot-footer">
+            <p class="streak-snapshot-hint">Add subtasks in ClickUp to unlock deliverable-level funnel and analytics.</p>
+        </div>
+    </div>`;
 }
 
 /**
@@ -3590,6 +3647,9 @@ function buildProjectPageViewModel(p, siblingResult) {
         roadmapInner = siblingWarning + roadmapInner;
     }
 
+    const isClickUp = !!(siblingResult.clickup
+        || (typeof isClickUpWorkspace === 'function' && isClickUpWorkspace(AppState?.activeWorkspace)));
+
     return {
         rel,
         roadmapInner,
@@ -3604,6 +3664,8 @@ function buildProjectPageViewModel(p, siblingResult) {
         siblingWarning,
         classicSibling,
         masterProgress: projectDisplayProgress(p),
+        isClickUp,
+        clickupUrl: siblingResult.url || p.clickupMeta?.url || '',
     };
 }
 
@@ -3614,6 +3676,40 @@ function renderProjectPageDevtrack(p, vm) {
             <div class="streak-pd-metric__value">${escapeHtml(String(value))}</div>
             ${sub ? `<div class="streak-pd-metric__sub">${sub}</div>` : ''}
         </div>`;
+
+    const clickUp = !!vm.isClickUp;
+    const hasRows = !!vm.hasRoadmapRows;
+    const metrics = clickUp
+        ? [
+            metricCard(hasRows ? 'Deliverables' : 'Tasks', vm.kTotal, hasRows ? 'subtasks on this campaign' : 'this ClickUp task'),
+            metricCard('Live', vm.kLive, 'completed / live'),
+            metricCard('In progress', vm.kProg, 'active delivery'),
+            metricCard('Pending', vm.kPend, 'brief & planning'),
+            metricCard('Progress', `${hasRows ? vm.kAvg : vm.masterProgress}%`, hasRows ? 'avg from deliverables' : 'task progress'),
+        ].join('')
+        : [
+            metricCard('Total pages', vm.kTotal, 'rows in roadmap'),
+            metricCard('Pages live', vm.kLive, 'stage at Live'),
+            metricCard('In progress', vm.kProg, 'active delivery'),
+            metricCard('Pending / plan', vm.kPend, 'backlog & planning'),
+            metricCard('Delivery progress', `${hasRows ? vm.kAvg : vm.masterProgress}%`, hasRows ? 'avg from roadmap rows' : 'master project %'),
+        ].join('');
+
+    const roadmapTitle = clickUp
+        ? (hasRows ? 'Deliverables' : 'Campaign details')
+        : 'Development roadmap';
+    const roadmapSub = clickUp
+        ? (hasRows
+            ? 'Select a deliverable to update the details panel.'
+            : 'Overview of this ClickUp task. Add subtasks for a deliverable table.')
+        : 'Select a row to update the page details panel.';
+    const legend = hasRows || !clickUp ? buildRoadmapLegendHTML({ clickup: clickUp }) : '';
+    const openClickUp = clickUp && vm.clickupUrl
+        ? `<a class="streak-pd-action-btn" href="${escapeHtml(vm.clickupUrl)}" target="_blank" rel="noopener" title="Open in ClickUp">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                        Open in ClickUp
+                    </a>`
+        : '';
 
     return `
     <div class="streak-project-page streak-project-page--devtrack">
@@ -3629,7 +3725,8 @@ function renderProjectPageDevtrack(p, vm) {
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
                         Copy link
                     </button>
-                    ${CONFIG.SHEET_CSV_URL ? `<a class="streak-pd-action-btn" href="${CONFIG.SHEET_CSV_URL.replace(/pub\?output=csv.*/, 'edit')}" target="_blank" rel="noopener" title="Open source sheet">
+                    ${openClickUp}
+                    ${!clickUp && CONFIG.SHEET_CSV_URL ? `<a class="streak-pd-action-btn" href="${CONFIG.SHEET_CSV_URL.replace(/pub\?output=csv.*/, 'edit')}" target="_blank" rel="noopener" title="Open source sheet">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
                         Open in Sheets
                     </a>` : ''}
@@ -3640,13 +3737,7 @@ function renderProjectPageDevtrack(p, vm) {
                 <p class="streak-pd-devtrack-hi">Projects <span class="streak-pd-devtrack-sep">/</span> ${escapeHtml(p.id)}</p>
                 <h1 class="streak-pd-devtrack-title">${escapeHtml(p.name)}</h1>
                 <p class="streak-pd-devtrack-sub">${escapeHtml(p.client || '—')} · ${escapeHtml(vm.oneSentence)}</p>
-                <div class="streak-pd-metrics">
-                    ${metricCard('Total pages', vm.kTotal, 'rows in roadmap')}
-                    ${metricCard('Pages live', vm.kLive, 'stage at Live')}
-                    ${metricCard('In progress', vm.kProg, 'active delivery')}
-                    ${metricCard('Pending / plan', vm.kPend, 'backlog & planning')}
-                    ${metricCard('Delivery progress', `${vm.hasRoadmapRows ? vm.kAvg : vm.masterProgress}%`, vm.hasRoadmapRows ? 'avg from roadmap rows' : 'master project %')}
-                </div>
+                <div class="streak-pd-metrics">${metrics}</div>
             </header>
 
             <div class="streak-pd-devtrack-split">
@@ -3654,17 +3745,17 @@ function renderProjectPageDevtrack(p, vm) {
                     <div class="streak-pd-roadmap-card">
                         <div class="streak-roadmap-card-head">
                             <div>
-                                <h2 id="roadmap-h" class="streak-roadmap-h">Development roadmap</h2>
-                                <p class="streak-roadmap-sub">Select a row to update the page details panel.</p>
+                                <h2 id="roadmap-h" class="streak-roadmap-h">${roadmapTitle}</h2>
+                                <p class="streak-roadmap-sub">${roadmapSub}</p>
                             </div>
-                            ${buildRoadmapLegendHTML()}
+                            ${legend}
                         </div>
-                        <div class="streak-roadmap-table-wrap">
+                        <div class="${hasRows ? 'streak-roadmap-table-wrap' : 'streak-roadmap-body'}">
                             ${vm.roadmapInner}
                         </div>
                     </div>
                 </section>
-                <aside class="streak-pd-detail-aside" aria-label="Page details">
+                <aside class="streak-pd-detail-aside" aria-label="${clickUp ? 'Task details' : 'Page details'}">
                     ${vm.asidePanels}
                 </aside>
             </div>
@@ -3901,8 +3992,11 @@ function renderIntelligence() {
     const sum = AppState.intelligenceSummary || {};
     const ranked = AppState.attentionRanked.slice(0, 12);
     const cap = AppState.capacityForecast;
-    const intake = AppState.intakeRecommendation;
+    const intake = AppState.intakeRecommendation || {};
     const resMap = AppState.resourceMap;
+    const creatorMode = typeof isContentCreatorWorkspace === 'function' && isContentCreatorWorkspace();
+    const primaryRole = typeof getPrimaryWorkRole === 'function' ? getPrimaryWorkRole() : 'Developer';
+    const intakeTiers = intake.tiers || {};
 
     const kpiTiles = [
         { 
@@ -3924,16 +4018,20 @@ function renderIntelligence() {
             cls: '' 
         },
         { 
-            label: 'New Small Project Slots', 
+            label: 'Safe Small Starts', 
             value: intake.small ?? 0, 
-            sub: 'For 1 developer over 30 days', 
-            cls: '' 
+            sub: creatorMode
+                ? `1 ${primaryRole} · 30-day campaign`
+                : '1 Developer · 30-day project', 
+            cls: (intake.small ?? 0) === 0 ? 'intel-kpi--muted' : '' 
         },
         { 
-            label: 'New Medium Project Slots', 
+            label: 'Safe Medium Starts', 
             value: intake.medium ?? 0, 
-            sub: 'For 2 devs + QA over 60 days', 
-            cls: '' 
+            sub: creatorMode
+                ? `2 ${primaryRole}s · 60-day campaign`
+                : '2 Devs + QA · 60-day project', 
+            cls: (intake.medium ?? 0) === 0 ? 'intel-kpi--muted' : '' 
         },
         { 
             label: 'Hiring Advisor', 
@@ -3966,11 +4064,11 @@ function renderIntelligence() {
             <div class="intel-attn-main" style="margin-left:4px;">
                 <div class="intel-attn-name" style="font-size:14px;font-weight:700;">${escapeHtml(p.name)}</div>
                 <div class="intel-attn-meta" style="font-size:11px;margin-top:2px;">Stage: <strong>${escapeHtml(p.stage)}</strong> &nbsp;·&nbsp; Lead: <strong>${escapeHtml(p.owner || '—')}</strong></div>
-                <div class="intel-attn-reasons" style="font-size:11px;color:#d93025;margin-top:4px;font-weight:500;">⚠️ ${escapeHtml(reasons)}</div>
+                <div class="intel-attn-reasons" style="font-size:11px;color:#d93025;margin-top:4px;font-weight:500;display:flex;align-items:flex-start;gap:6px;"><span class="ui-inline-icon" aria-hidden="true">${Icons.alert}</span><span>${escapeHtml(reasons)}</span></div>
             </div>
             <span class="intel-tier-pill" style="background:${m.bg};color:${m.color};border:1px solid ${m.color}40;font-size:10px;font-weight:700;padding:4px 8px;border-radius:8px;">${riskLabel}</span>
         </div>`;
-    }).join('') : `<div class="intel-empty">🎉 All active projects are running smoothly. No scored risks.</div>`;
+    }).join('') : `<div class="intel-empty intel-empty--ok"><span class="ui-inline-icon" aria-hidden="true">${Icons.checkCircle}</span> All active projects are running smoothly. No scored risks.</div>`;
 
     const releasePeople = (cap.summary?.freeingNext30 || []).slice(0, 10);
     const releaseHTML = releasePeople.length ? releasePeople.map(p => {
@@ -4026,21 +4124,42 @@ function renderIntelligence() {
         }).join('');
         return `
         <div class="intel-util-card card-light" style="padding:18px;border-radius:16px;">
-            <div class="intel-util-title" style="font-size:14px;font-weight:800;margin-bottom:14px;border-bottom:1px solid var(--border-light);padding-bottom:6px;">📈 Workload in ${days} days</div>
+            <div class="intel-util-title" style="font-size:14px;font-weight:800;margin-bottom:14px;border-bottom:1px solid var(--border-light);padding-bottom:6px;">${sectionTitleWithIcon(Icons.trendUp, `Workload in ${days} days`)}</div>
             ${bars}
         </div>`;
     }).join('');
 
-    const intakeCards = [
-        { key: 'small', label: 'Small Projects', desc: 'Needs 1 Developer · lasts 30 days' },
-        { key: 'medium', label: 'Medium Projects', desc: 'Needs 2 Devs + 1 QA · lasts 60 days' },
-        { key: 'large', label: 'Large Programs', desc: 'Needs full mixed team · lasts 90 days' },
-    ].map(c => `
-        <div class="intel-intake-card card-light" style="padding:20px;border-radius:16px;display:flex;flex-direction:column;justify-content:center;align-items:center;">
-            <div class="intel-intake-num" style="font-size:36px;font-weight:900;color:var(--accent, #1A73E8);line-height:1;">${intake[c.key] ?? 0}</div>
-            <div class="intel-intake-lbl" style="font-size:14px;font-weight:800;margin-top:8px;color:var(--text-primary);">${c.label}</div>
-            <div class="intel-intake-desc" style="font-size:11px;color:var(--text-muted);margin-top:4px;text-align:center;line-height:1.3;">${c.desc}</div>
-        </div>`).join('');
+    const intakeCardDefs = creatorMode
+        ? [
+            { key: 'small',  label: 'Small campaigns',  need: `1 ${primaryRole}`,  lasts: '30 days' },
+            { key: 'medium', label: 'Medium campaigns', need: `2 ${primaryRole}s`, lasts: '60 days' },
+            { key: 'large',  label: 'Large programs',   need: `3 ${primaryRole}s`, lasts: '90 days' },
+        ]
+        : [
+            { key: 'small',  label: 'Small projects',  need: '1 Developer',           lasts: '30 days' },
+            { key: 'medium', label: 'Medium projects', need: '2 Developers + 1 QA',  lasts: '60 days' },
+            { key: 'large',  label: 'Large programs',  need: 'Dev + QA + BA',         lasts: '90 days' },
+        ];
+
+    const intakeCards = intakeCardDefs.map(c => {
+        const tier = intakeTiers[c.key] || {};
+        const slots = intake[c.key] ?? tier.slots ?? 0;
+        const free = tier.minFree != null ? tier.minFree : null;
+        const heads = tier.heads || 1;
+        const days = tier.days || (c.key === 'large' ? 90 : c.key === 'medium' ? 60 : 30);
+        const tone = slots <= 0 ? 'zero' : slots === 1 ? 'tight' : 'ok';
+        const mathLine = free != null
+            ? `${free} free × ${days}d window ÷ ${heads} required = ${slots}`
+            : `${slots} slot${slots === 1 ? '' : 's'} available`;
+        return `
+        <div class="intel-intake-card intel-intake-card--${tone}">
+            <div class="intel-intake-num">${slots}</div>
+            <div class="intel-intake-lbl">${escapeHtml(c.label)}</div>
+            <div class="intel-intake-need">${escapeHtml(c.need)} · ${escapeHtml(c.lasts)}</div>
+            <div class="intel-intake-math">${escapeHtml(mathLine)}</div>
+            <div class="intel-intake-status">${slots <= 0 ? 'No safe capacity' : slots === 1 ? 'Limited capacity' : 'Open to start'}</div>
+        </div>`;
+    }).join('');
 
     const aiShell = (typeof AiInsights !== 'undefined' && featureOn('AI_INSIGHTS'))
         ? AiInsights.shellHtml('ai-intelligence-insights', 'Executive Summary Brief', 'AI recommendation narrative based on staffing, client load, and project timelines — numbers below are unchanged.')
@@ -4064,7 +4183,7 @@ function renderIntelligence() {
             <!-- Projects attention card -->
             <div class="intel-section card-light" style="border-radius:18px;padding:20px;">
                 <div class="intel-section-head" style="margin-bottom:16px;border-bottom:1px solid var(--border-light);padding-bottom:10px;">
-                    <h2 class="intel-section-title" style="font-size:16px;font-weight:800;color:var(--text-primary);">⚠️ Projects Needing Focus</h2>
+                    <h2 class="intel-section-title" style="font-size:16px;font-weight:800;color:var(--text-primary);">${sectionTitleWithIcon(Icons.alert, 'Projects Needing Focus')}</h2>
                     <span class="intel-section-sub" style="font-size:12px;line-height:1.4;color:var(--text-muted);margin-top:4px;display:block;">
                         These projects have high risk scores due to milestones slipping, resource constraints, or heavy backlogs.
                     </span>
@@ -4075,7 +4194,7 @@ function renderIntelligence() {
             <!-- Resource release card -->
             <div class="intel-section card-light" style="border-radius:18px;padding:20px;">
                 <div class="intel-section-head" style="margin-bottom:16px;border-bottom:1px solid var(--border-light);padding-bottom:10px;">
-                    <h2 class="intel-section-title" style="font-size:16px;font-weight:800;color:var(--text-primary);">👥 Team Rolling Off Soon (30d)</h2>
+                    <h2 class="intel-section-title" style="font-size:16px;font-weight:800;color:var(--text-primary);">${sectionTitleWithIcon(Icons.users, 'Team Rolling Off Soon (30d)')}</h2>
                     <span class="intel-section-sub" style="font-size:12px;line-height:1.4;color:var(--text-muted);margin-top:4px;display:block;">
                         These team members are finishing their current project commitments in the next 30 days and will be ready for new assignments.
                     </span>
@@ -4087,7 +4206,7 @@ function renderIntelligence() {
         <!-- Heatmap card -->
         <div class="intel-section card-light" style="margin-top:20px;border-radius:18px;padding:20px;">
             <div class="intel-section-head" style="margin-bottom:16px;border-bottom:1px solid var(--border-light);padding-bottom:10px;">
-                <h2 class="intel-section-title" style="font-size:16px;font-weight:800;color:var(--text-primary);">📅 Role Busy-ness Calendar (Availability Heatmap)</h2>
+                <h2 class="intel-section-title" style="font-size:16px;font-weight:800;color:var(--text-primary);">${sectionTitleWithIcon(Icons.calendar, 'Role Busy-ness Calendar')}</h2>
                 <span class="intel-section-sub" style="font-size:12px;line-height:1.4;color:var(--text-muted);margin-top:4px;display:block;">
                     Expected weekly workload for each role over the next 3 months. Hover over cells to see details.
                 </span>
@@ -4105,11 +4224,11 @@ function renderIntelligence() {
         <div class="intel-util-grid" style="margin-top:20px;">${utilHorizons}</div>
 
         <!-- Business opportunity card -->
-        <div class="intel-section card-light" style="margin-top:20px;border-radius:18px;padding:20px;">
+        <div class="intel-section card-light intel-intake-section" style="margin-top:20px;border-radius:18px;padding:20px;">
             <div class="intel-section-head" style="margin-bottom:16px;border-bottom:1px solid var(--border-light);padding-bottom:10px;">
-                <h2 class="intel-section-title" style="font-size:16px;font-weight:800;color:var(--text-primary);">💼 Safe Business Intake Capacity</h2>
+                <h2 class="intel-section-title" style="font-size:16px;font-weight:800;color:var(--text-primary);">${sectionTitleWithIcon(Icons.briefcase, 'Safe business intake')}</h2>
                 <span class="intel-section-sub" style="font-size:12px;line-height:1.4;color:var(--text-muted);margin-top:4px;display:block;">
-                    Based on our team's upcoming free capacity, this is the maximum number of new projects we can start right now without causing delays or developer burnout.
+                    How many new ${creatorMode ? 'campaigns' : 'projects'} you can start without overloading ${escapeHtml(primaryRole.toLowerCase())} capacity. Uses the same free-headcount signal as the busy-ness calendar — not a separate guess.
                 </span>
             </div>
             <div class="intel-intake-grid">${intakeCards}</div>
@@ -4479,7 +4598,7 @@ function renderHelp() {
         <!-- Section 2: Attention & Risk Engine -->
         <div class="card-light" style="padding:24px; border-radius:18px; margin-bottom:20px;">
             <h2 style="font-size:18px; font-weight:800; color:var(--text-primary); margin:0 0 10px; display:flex; align-items:center; gap:8px;">
-                ⚠️ Attention & Risk Engine
+                ${sectionTitleWithIcon(Icons.alert, 'Attention & Risk Engine')}
             </h2>
             <div style="font-size:13px; color:var(--text-secondary); line-height:1.6; margin-bottom:16px;">
                 The <strong>Attention Score</strong> (0 to 100) measures how much a project needs immediate review. Points are assigned for compounding risk factors, defined in <code>CONFIG.ATTENTION_WEIGHTS</code>:
@@ -4538,17 +4657,17 @@ function renderHelp() {
             </table>
 
             <div style="margin-top:16px; display:flex; gap:8px; flex-wrap:wrap;">
-                <span style="font-size:11px; font-weight:700; background:#D930251F; color:#D93025; padding:4px 8px; border-radius:6px;">🔴 Critical Risk: Score &ge; 70</span>
-                <span style="font-size:11px; font-weight:700; background:#F9AB001F; color:#B06000; padding:4px 8px; border-radius:6px;">🟡 High Risk: Score 50 - 69</span>
-                <span style="font-size:11px; font-weight:700; background:#1A73E81F; color:#1A73E8; padding:4px 8px; border-radius:6px;">🔵 Medium Risk: Score 30 - 49</span>
-                <span style="font-size:11px; font-weight:700; background:#1E8E3E1F; color:#1E8E3E; padding:4px 8px; border-radius:6px;">🟢 Low Risk: Score &lt; 30</span>
+                <span style="font-size:11px; font-weight:700; background:#D930251F; color:#D93025; padding:4px 8px; border-radius:6px;">Critical Risk: Score &ge; 70</span>
+                <span style="font-size:11px; font-weight:700; background:#F9AB001F; color:#B06000; padding:4px 8px; border-radius:6px;">High Risk: Score 50 - 69</span>
+                <span style="font-size:11px; font-weight:700; background:#1A73E81F; color:#1A73E8; padding:4px 8px; border-radius:6px;">Medium Risk: Score 30 - 49</span>
+                <span style="font-size:11px; font-weight:700; background:#1E8E3E1F; color:#1E8E3E; padding:4px 8px; border-radius:6px;">Low Risk: Score &lt; 30</span>
             </div>
         </div>
 
         <!-- Section 3: Projections & Timelines -->
         <div class="card-light" style="padding:24px; border-radius:18px; margin-bottom:20px;">
             <h2 style="font-size:18px; font-weight:800; color:var(--text-primary); margin:0 0 10px; display:flex; align-items:center; gap:8px;">
-                📈 Predictive Timeline & Velocity
+                ${sectionTitleWithIcon(Icons.trendUp, 'Predictive Timeline & Velocity')}
             </h2>
             <div style="font-size:13px; color:var(--text-secondary); line-height:1.6; margin-bottom:16px;">
                 How does Atlas project project completion dates dynamically?
@@ -4576,7 +4695,7 @@ function renderHelp() {
         <!-- Section 4: Resource Load and Intake -->
         <div class="card-light" style="padding:24px; border-radius:18px;">
             <h2 style="font-size:18px; font-weight:800; color:var(--text-primary); margin:0 0 10px; display:flex; align-items:center; gap:8px;">
-                👥 Resource Utilization & Intake
+                ${sectionTitleWithIcon(Icons.users, 'Resource Utilization & Intake')}
             </h2>
             <div style="font-size:13px; color:var(--text-secondary); line-height:1.6; margin-bottom:16px;">
                 Atlas builds weekly capacity slots to optimize staffing and avoid developer burnout.

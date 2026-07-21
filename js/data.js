@@ -367,26 +367,82 @@ function getUniqueAlertProjects(alerts) {
 }
 
 /**
+ * Progress % for velocity forecasts.
+ * Sibling roadmap avg can be diluted by many not-started pages (e.g. 0/37 live → ~11%),
+ * which makes slip explode (+500d). Prefer the master sheet % in that case.
+ */
+function predictionProgress(project) {
+    const master = Math.round(parseFloat(project?.progress) || 0);
+    const disp = typeof projectDisplayProgress === 'function'
+        ? projectDisplayProgress(project)
+        : master;
+    const pages = Number(project?.roadmap?.total)
+        || parseInt(String(project?.total_pages ?? 0), 10)
+        || 0;
+    const done = Number(project?.roadmap?.live)
+        || parseInt(String(project?.completed_pages ?? 0), 10)
+        || 0;
+    if (master > 0 && pages >= 5 && done <= Math.max(1, pages * 0.05) && disp > 0 && disp < master) {
+        return master;
+    }
+    return disp > 0 ? disp : master;
+}
+
+/**
  * Velocity-based completion forecast (shared by Alerts at_risk bucket and Analytics).
  * Returns null when dates/progress are insufficient to project.
+ *
+ * High progress: project finish from historical velocity (start + elapsed / rate).
+ * Low progress: velocity explodes (11% → +500d); instead project remaining work at
+ * the original planned pace from today — a stable “days behind plan” style slip.
  */
 function computeCompletionPrediction(project, today) {
     const t = today ? startOfDay(today) : startOfDay(new Date());
     const ns = normalizeStage(project?.stage || '');
-    const dispProg = projectDisplayProgress(project);
+    const dispProg = predictionProgress(project);
     if (ns === 'Live' || !dispProg || dispProg <= 0 || !project.start_date || !project.release_date) return null;
-    const start = parseSmartDate(project.start_date);
-    const target = parseSmartDate(project.release_date);
+
+    const start = startOfDay(parseSmartDate(project.start_date));
+    const target = startOfDay(parseSmartDate(project.release_date));
     if (!start || !target || isNaN(start.getTime()) || isNaN(target.getTime())) return null;
+    if (target.getTime() <= start.getTime()) return null;
+
     const daysElapsed = Math.max(1, Math.round((t - start) / 86400000));
     const plannedDays = Math.max(1, Math.round((target - start) / 86400000));
-    const totalDaysEst = Math.min(
-        Math.round(daysElapsed / (dispProg / 100)),
-        plannedDays + 365
-    );
-    const projected = new Date(start.getTime() + totalDaysEst * 86400000);
-    const diffDays = Math.round((projected - target) / 86400000);
-    return { diffDays, projected, target, progress: dispProg, stage: ns };
+
+    const maxPipe = typeof MAX_PIPELINE_DAYS !== 'undefined' ? MAX_PIPELINE_DAYS : 730;
+    if (daysElapsed > maxPipe * 2) return null;
+
+    const rate = dispProg / 100;
+    const velocityTotal = Math.round(daysElapsed / rate);
+    const velocitySlip = velocityTotal - plannedDays;
+
+    // Below ~25% complete, historical velocity is not trustworthy for end dates.
+    const lowConfidence = dispProg < 25 && velocitySlip > plannedDays;
+
+    let projected;
+    let diffDays;
+    let capped = false;
+    if (lowConfidence) {
+        const remainingAtPlan = Math.round(plannedDays * (1 - rate));
+        projected = new Date(t.getTime() + remainingAtPlan * 86400000);
+        diffDays = Math.round((projected - target) / 86400000);
+    } else {
+        const maxEst = Math.max(plannedDays + maxPipe, maxPipe * 2);
+        const totalDaysEst = Math.min(Math.max(daysElapsed, velocityTotal), maxEst);
+        projected = new Date(start.getTime() + totalDaysEst * 86400000);
+        diffDays = Math.round((projected - target) / 86400000);
+        capped = velocityTotal > maxEst;
+    }
+
+    return {
+        diffDays,
+        projected,
+        target,
+        progress: dispProg,
+        stage: ns,
+        capped,
+    };
 }
 
 function computeAlerts(projects) {
@@ -433,6 +489,7 @@ function computeAlerts(projects) {
                     projected: pred.projected,
                     target: pred.target,
                     predProgress: pred.progress,
+                    capped: !!pred.capped,
                 });
             } else if (
                 // Bug #5 fix: 0% progress + imminent deadline → at_risk (prediction returns null for 0% progress)
@@ -639,6 +696,32 @@ function getWorkspaceStageFlow(ws) {
         return w.clickupStageFlow;
     }
     return typeof STAGE_FLOW !== 'undefined' ? STAGE_FLOW : [];
+}
+
+/** Overview funnel stage order — engineering pipeline vs ClickUp marketing flow. */
+const STREAK_FUNNEL_STAGES = ['Planning', 'Development', 'QA', 'Release', 'Live'];
+
+function getFunnelStages(ws) {
+    const w = ws || (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
+    if (isClickUpWorkspace(w) && Array.isArray(w.clickupStageFlow) && w.clickupStageFlow.length) {
+        return w.clickupStageFlow.map(f => f.stage);
+    }
+    return STREAK_FUNNEL_STAGES.slice();
+}
+
+/** Bar colors for Overview Stage Funnel (aligned with Analytics heatmap). */
+function getFunnelStageColors(ws) {
+    const w = ws || (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
+    if (isClickUpWorkspace(w) && w.clickupStageFlow?.length) {
+        return {
+            Brief: '#A78BFA', Content: '#818CF8', Design: '#60A5FA',
+            Review: '#34D399', Publish: '#10B981', Live: '#1E8E3E',
+        };
+    }
+    return {
+        Planning: '#8B5CF6', Development: '#1A73E8', QA: '#F9AB00',
+        Release: '#EF4444', Live: '#1E8E3E',
+    };
 }
 
 /** Label for analytics/funnel units: pages (Sheets) vs tasks/deliverables (ClickUp). */
@@ -867,6 +950,8 @@ function mapClickUpTaskToProject(task, ws) {
         owner,
         client,
         stage,
+        rawStage: statusRaw,
+        funnelStage: clickUpFlowStage(statusRaw, isDone, workspace),
         status,
         progress,
         start_date,
@@ -1487,8 +1572,15 @@ function computeSiblingPages(hlist, rows) {
     return out;
 }
 
-/** Map a delivery unit to one of the five Overview funnel buckets. */
-function funnelBucketFromUnit(u) {
+/** Map a delivery unit to an Overview funnel bucket (workspace-aware). */
+function funnelBucketFromUnit(u, ws) {
+    const w = ws || (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
+    if (u?.funnelStage) return u.funnelStage;
+    if (isClickUpWorkspace(w)) {
+        const raw = u?.rawStage || u?.stage || '';
+        const done = !!(u?.reachedLive || u?.completed || normalizeStage(u?.stage || '') === 'Live');
+        return clickUpFlowStage(raw, done, w);
+    }
     let bucket = normalizeStage(u?.stage || u?.rawStage || '');
     if (bucket === 'Backlog') bucket = 'Planning';
     return bucket;
@@ -1499,7 +1591,8 @@ function funnelBucketFromUnit(u) {
  * Streak projects → sibling sheet pages; ClickUp / unlinked → one master row each.
  */
 function getFunnelStageCounts() {
-    const stages = ['Planning', 'Development', 'QA', 'Release', 'Live'];
+    const ws = (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
+    const stages = getFunnelStages(ws);
     const counts = {};
     const overdueByStage = {};
     const alertByStage = {};
@@ -1513,7 +1606,7 @@ function getFunnelStageCounts() {
     const units = typeof getAnalyticsUnits === 'function' ? getAnalyticsUnits() : [];
 
     units.forEach(u => {
-        const bucket = funnelBucketFromUnit(u);
+        const bucket = funnelBucketFromUnit(u, ws);
         if (!counts.hasOwnProperty(bucket)) return;
         counts[bucket]++;
 
@@ -1538,6 +1631,7 @@ function getFunnelStageCounts() {
  */
 function getAnalyticsUnits() {
     const projects = (typeof AppState !== 'undefined' && AppState.allProjects) ? AppState.allProjects : [];
+    const ws = (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
     const units = [];
     projects.forEach(p => {
         const pages = (p.roadmap?.hasSibling && Array.isArray(p.roadmap.pages) && p.roadmap.pages.length)
@@ -1545,6 +1639,11 @@ function getAnalyticsUnits() {
         if (pages) {
             pages.forEach(pg => {
                 if (!pg.page) return;
+                const done = !!(pg.completed || pg.reachedLive || normalizeStage(pg.stage || '') === 'Live');
+                const funnelStage = pg.funnelStage
+                    || (isClickUpWorkspace(ws)
+                        ? clickUpFlowStage(pg.rawStage || pg.stage || '', done, ws)
+                        : funnelBucketFromUnit({ stage: pg.stage, rawStage: pg.rawStage }, ws));
                 units.push({
                     id:               p.id,
                     name:             `${p.name} · ${pg.page}`,
@@ -1555,6 +1654,7 @@ function getAnalyticsUnits() {
                     owner:            p.owner,
                     stage:            pg.stage,
                     rawStage:         pg.rawStage || pg.stage,
+                    funnelStage,
                     status:           normalizeStatus(pg.status),
                     developer:        pg.developer,
                     qa_engineer:      pg.qa,
@@ -1566,11 +1666,18 @@ function getAnalyticsUnits() {
                     stageDurations:   pg.stageDurations || [],
                     pipelineExpectedDays: pg.pipelineExpectedDays,
                     pipelineActualDays: pg.pipelineActualDays,
-                    reachedLive:      !!pg.reachedLive,
+                    reachedLive:      done,
+                    completed:        !!pg.completed,
                     isPage:           true,
                 });
             });
         } else {
+            const rawStage = (p.rawStage || p.stage || '').trim();
+            const done = !!(p.clickupComplete || normalizeStage(p.stage || '') === 'Live');
+            const funnelStage = p.funnelStage
+                || (isClickUpWorkspace(ws)
+                    ? clickUpFlowStage(rawStage, done, ws)
+                    : funnelBucketFromUnit({ stage: p.stage, rawStage }, ws));
             units.push({
                 id:               p.id,
                 name:             p.name,
@@ -1580,7 +1687,8 @@ function getAnalyticsUnits() {
                 priority:         p.priority,
                 owner:            p.owner,
                 stage:            normalizeStage(p.stage || ''),
-                rawStage:         (p.stage || '').trim() || normalizeStage(p.stage || ''),
+                rawStage:         rawStage || normalizeStage(p.stage || ''),
+                funnelStage,
                 status:           normalizeStatus(p.status),
                 developer:        p.developer,
                 qa_engineer:      p.qa_engineer,
@@ -1590,7 +1698,7 @@ function getAnalyticsUnits() {
                 progress:         typeof projectDisplayProgress === 'function' ? projectDisplayProgress(p) : (p.progress || 0),
                 stageExpectations: [],
                 stageDurations:   [],
-                reachedLive:      false,
+                reachedLive:      done,
                 isPage:           false,
             });
         }
@@ -1617,7 +1725,12 @@ function getAnalyticsDrillUnits(type, value, extra) {
 
     switch (type) {
         case 'stage':
-            list = units.filter(u => ns(u.stage) === value);
+            list = units.filter(u => {
+                const bucket = typeof funnelBucketFromUnit === 'function'
+                    ? funnelBucketFromUnit(u)
+                    : ns(u.stage);
+                return bucket === value;
+            });
             title = `${value} — ${pluralUnit(list.length)}`;
             subtitle = `Delivery ${uPlur} currently in this stage`;
             break;
@@ -1762,6 +1875,13 @@ function projectFunnelStage(p) {
     if (featureOn('SIBLING_FUNNEL_STAGE') && p?.roadmap?.hasSibling && p.roadmap.funnelStage) {
         return p.roadmap.funnelStage;
     }
+    const ws = (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
+    if (isClickUpWorkspace(ws)) {
+        if (p?.funnelStage) return p.funnelStage;
+        const raw = p?.rawStage || '';
+        const done = !!(p?.clickupComplete || normalizeStage(p?.stage || '') === 'Live');
+        return clickUpFlowStage(raw, done, ws);
+    }
     return p?.stage ?? 'Backlog';
 }
 
@@ -1838,6 +1958,7 @@ function mapClickUpSubtaskToPage(subtask, parent, ws) {
         page:      subtask.name || 'Subtask',
         stage,
         rawStage:  statusRaw || stage,
+        funnelStage: flowStage,
         status:    normalizeStatus(statusRaw || parent?.status || ''),
         start,
         release,
@@ -1862,16 +1983,18 @@ function computeClickUpSubtaskPages(subtasks, parent, ws) {
     return subtasks.map(st => mapClickUpSubtaskToPage(st, parent, ws));
 }
 
-function computeClickUpRoadmapFromPages(parent, pages) {
+function computeClickUpRoadmapFromPages(parent, pages, ws) {
+    const workspace = ws || (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
     let live = 0;
     let inprog = 0;
     let pending = 0;
     let pctSum = 0;
     let pctCountCU = 0;  // Bug #10 fix: separate denominator — only count subtasks with real progress
     pages.forEach(pg => {
-        const st = normalizeStage(pg.stage || '');
+        const fs = pg.funnelStage || clickUpFlowStage(pg.rawStage || pg.stage || '', pg.completed, workspace);
+        const st = isClickUpWorkspace(workspace) ? fs : normalizeStage(pg.stage || '');
         if (pg.completed || st === 'Live') live += 1;
-        else if (st === 'Backlog' || st === 'Planning') pending += 1;
+        else if (st === 'Backlog' || st === 'Planning' || st === 'Brief') pending += 1;
         else inprog += 1;
         // Bug #10 fix: exclude not-started subtasks (progress=0, not complete) from avg
         // when flag is on; mirrors Bug #1 fix in computeRoadmapMetrics.
@@ -1884,10 +2007,13 @@ function computeClickUpRoadmapFromPages(parent, pages) {
     const avgPct = pctCountCU > 0 ? Math.round(pctSum / pctCountCU) : (parent.progress || 0);
     const stageCounts = {};
     pages.forEach(pg => {
-        const b = normalizeStage(pg.stage || '');
+        const b = pg.funnelStage
+            || (isClickUpWorkspace(workspace)
+                ? clickUpFlowStage(pg.rawStage || pg.stage || '', pg.completed, workspace)
+                : normalizeStage(pg.stage || ''));
         stageCounts[b] = (stageCounts[b] || 0) + 1;
     });
-    let funnelStage = parent.stage;
+    let funnelStage = parent.funnelStage || parent.stage;
     let maxN = 0;
     Object.entries(stageCounts).forEach(([s, n]) => {
         if (n > maxN) { maxN = n; funnelStage = s; }
@@ -1965,7 +2091,7 @@ async function enrichClickUpWithSubtasks(projects, token, ws) {
         }
         const pages = computeClickUpSubtaskPages(subs, p, ws);
         const assignments = computeClickUpSubtaskAssignments(pages, ws);
-        const rm = computeClickUpRoadmapFromPages(p, pages);
+        const rm = computeClickUpRoadmapFromPages(p, pages, ws);
         list[idx].roadmap = {
             hasSibling: true,
             source: 'clickup',
@@ -2042,7 +2168,7 @@ async function loadClickUpProjectDetail(project, token, ws) {
     }
 
     const table = buildClickUpDeliverablesTable(pages);
-    const rm = computeClickUpRoadmapFromPages(project, pages);
+    const rm = computeClickUpRoadmapFromPages(project, pages, ws);
     return {
         hasSibling: true,
         source: 'clickup',
@@ -2922,65 +3048,120 @@ function _avgUtilAcrossRoles(roles) {
 /**
  * Business intake slots from projected availability by role.
  */
-function computeBusinessIntakeCapacity(resourceMap) {
+/**
+ * Safe business intake: how many new projects of each size can start without
+ * overloading the roles that project size needs.
+ *
+ * Logic (aligned with the Role Busy-ness heatmap):
+ * 1. For each tier (small / medium / large), look at the required roles + headcount
+ *    and the project duration (30 / 60 / 90 days) from workspace intake config.
+ * 2. Over every week in that duration, read freeHeadcount from the capacity forecast
+ *    (people in that role with no overlapping assignment that week).
+ * 3. Take the *minimum* free headcount across those weeks — capacity must hold for
+ *    the whole project, not just week 1.
+ * 4. Slots = floor(minFree / headsRequired). If the heatmap is fully booked (0 free
+ *    every week), intake is 0.
+ */
+function computeBusinessIntakeCapacity(resourceMap, capacityForecast) {
     if (!intelligenceEnabled()) {
-        return { small: 0, medium: 0, large: 0, byHorizon: {}, narrativeInputs: {} };
+        return {
+            small: 0, medium: 0, large: 0,
+            byHorizon: {}, tiers: {}, narrativeInputs: {}, explanation: '',
+        };
     }
 
     const today = startOfDay(new Date());
     const ws = (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
     const intake = (ws.intake && typeof ws.intake === 'object') ? ws.intake : (CONFIG.INTAKE || {});
     const intelRoles = typeof getIntelRoles === 'function' ? getIntelRoles(ws) : INTEL_ROLES;
+    const primaryRole = typeof getPrimaryWorkRole === 'function' ? getPrimaryWorkRole(ws) : 'Developer';
     const byHorizon = { 30: {}, 60: {}, 90: {} };
 
-    function countFreeInRole(role, horizonDays) {
+    /** Free people in a role for the full horizon — min weekly freeHeadcount from forecast. */
+    function freeAcrossHorizon(role, horizonDays) {
+        const weeks = capacityForecast?.roles?.[role]?.weeks;
+        if (Array.isArray(weeks) && weeks.length) {
+            const n = Math.max(1, Math.min(weeks.length, Math.ceil(horizonDays / 7)));
+            const slice = weeks.slice(0, n);
+            return Math.min(...slice.map(w => Number(w.freeHeadcount) || 0));
+        }
+        // Fallback when forecast missing: people with no active work in this role now,
+        // or known freeFrom within the horizon (not completed-only ghosts).
         const cut = today.getTime() + horizonDays * 86400000;
         let n = 0;
-        Object.values(resourceMap).forEach(person => {
-            const hasRole = person.assignments.some(a =>
-                !a.completed && a.role === role
-            ) || person.assignments.some(a => a.role === role);
-            if (!hasRole && person.assignments.every(a => a.role !== role)) return;
-
-            const actsInRole = person.assignments.filter(a => !a.completed && a.role === role);
-            if (!actsInRole.length && person.assignments.some(a => a.role === role)) {
-                n += 1;
+        Object.values(resourceMap || {}).forEach(person => {
+            const activeInRole = (person.assignments || []).filter(a => !a.completed && a.role === role);
+            if (!activeInRole.length) {
+                // Only count if they appear on the role roster (have this role on any assignment).
+                const everRole = (person.assignments || []).some(a => a.role === role);
+                if (everRole && person.activeCount === 0) n += 1;
                 return;
             }
-            if (!actsInRole.length) return;
-
-            const allDated = actsInRole.every(a => a.end);
-            if (!allDated && person.activeCount > 0) return;
             const ff = person.freeFrom ? person.freeFrom.getTime() : null;
-            if (person.activeCount === 0 || (ff && ff <= cut)) n += 1;
+            if (ff && ff <= cut && person.activeCount > 0) {
+                // Freeing inside horizon — count only if their remaining load ends by cut.
+                const allDated = activeInRole.every(a => a.end);
+                if (allDated) n += 1;
+            }
         });
         return n;
     }
 
     [30, 60, 90].forEach(days => {
         intelRoles.forEach(role => {
-            byHorizon[days][role] = countFreeInRole(role, days);
+            byHorizon[days][role] = freeAcrossHorizon(role, days);
         });
     });
 
-    function slotCount(tierKey) {
+    function tierSlots(tierKey) {
         const spec = intake[tierKey];
-        if (!spec) return 0;
-        const horizon = spec.days || 30;
-        const fallbackRole = typeof getPrimaryWorkRole === 'function' ? getPrimaryWorkRole(ws) : 'Developer';
-        const counts = (spec.roles || [fallbackRole]).map(r => byHorizon[horizon][r] || 0);
-        return Math.min(...counts);
+        if (!spec) {
+            return { slots: 0, heads: 1, days: 30, roles: [primaryRole], freeByRole: {}, limitingRole: primaryRole };
+        }
+        const heads = Math.max(1, parseInt(spec.heads, 10) || 1);
+        const days = spec.days || 30;
+        const roles = (Array.isArray(spec.roles) && spec.roles.length) ? spec.roles : [primaryRole];
+        const freeByRole = {};
+        let limitingRole = roles[0];
+        let minFree = Infinity;
+        roles.forEach(r => {
+            const free = byHorizon[days]?.[r] ?? freeAcrossHorizon(r, days);
+            freeByRole[r] = free;
+            if (free < minFree) {
+                minFree = free;
+                limitingRole = r;
+            }
+        });
+        if (!Number.isFinite(minFree)) minFree = 0;
+        const slots = Math.floor(minFree / heads);
+        return { slots, heads, days, roles, freeByRole, limitingRole, minFree };
     }
 
-    const primaryRole = typeof getPrimaryWorkRole === 'function' ? getPrimaryWorkRole(ws) : 'Developer';
+    const smallT = tierSlots('small');
+    const mediumT = tierSlots('medium');
+    const largeT = tierSlots('large');
+
+    const creatorMode = typeof isContentCreatorWorkspace === 'function' && isContentCreatorWorkspace(ws);
+    const roleWord = creatorMode ? (primaryRole + 's') : 'specialists';
+    let explanation = '';
+    if (smallT.slots === 0 && mediumT.slots === 0 && largeT.slots === 0) {
+        explanation = `No safe intake right now — ${roleWord.toLowerCase()} have no free capacity across the next planning windows (same signal as the busy-ness calendar above).`;
+    } else {
+        explanation = `Slots = free ${primaryRole} headcount sustained for the whole project length ÷ people required per project. Example: ${smallT.minFree} free for ${smallT.days}d ÷ ${smallT.heads} = ${smallT.slots} small.`;
+    }
+
     return {
-        small: slotCount('small'),
-        medium: slotCount('medium'),
-        large: slotCount('large'),
+        small: smallT.slots,
+        medium: mediumT.slots,
+        large: largeT.slots,
         byHorizon,
+        tiers: { small: smallT, medium: mediumT, large: largeT },
+        explanation,
         narrativeInputs: {
             devFree30: byHorizon[30].Developer || byHorizon[30][primaryRole] || 0,
             qaFree60: byHorizon[60].QA || byHorizon[60][primaryRole] || 0,
+            primaryFree30: byHorizon[30][primaryRole] || 0,
+            primaryRole,
         },
     };
 }
@@ -3025,7 +3206,7 @@ function computeResourceIntelligence(projects, alerts) {
     const resourceMap = buildResourceMap(projects);
     const attentionRanked = computeAttentionRanked(projects, alerts, resourceMap);
     const capacityForecast = computeRoleCapacityForecast(projects, resourceMap);
-    const intakeRecommendation = computeBusinessIntakeCapacity(resourceMap);
+    const intakeRecommendation = computeBusinessIntakeCapacity(resourceMap, capacityForecast);
     const intelligenceSummary = buildIntelligenceSummary(
         projects, alerts, resourceMap, attentionRanked, capacityForecast, intakeRecommendation
     );
