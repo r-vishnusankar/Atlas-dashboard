@@ -178,6 +178,10 @@ const App = {
             && AppState.resourceRosterStatus !== 'loading') {
             this.loadResourceRoster({ silent: true });
         }
+        // Reset scroll before render so the viewport-locked manager view
+        // starts at the top (delivery view scroll would otherwise hide it)
+        const scrollEl = document.querySelector('.content-area-scrollable');
+        if (scrollEl) scrollEl.scrollTop = 0;
         this.renderCurrentView();
     },
 
