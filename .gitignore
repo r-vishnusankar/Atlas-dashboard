@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 .python-version
+*.pre_revert_bak
 services/resource-api/.venv/
 services/resource-api/resource_tracker.db
 services/resource-api/.env
