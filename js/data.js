@@ -39,7 +39,7 @@ function headerCellToField(key) {
         project_id:        ['project_id', 'id'],
         project_name:      ['project_name', 'name', 'title'],
         owner:             ['owner', 'pm'],
-        client:            ['page_name', 'client'],
+        client:            ['page_name', 'client', 'current_page', 'current page'],
         page_owner:        ['page_owner'],
         stage:             ['stage', 'phase'],
         status:            ['status', 'health'],
@@ -242,6 +242,29 @@ function splitAssigneeNames(raw) {
     return String(raw || '').split(/[,;\n]+/).map(s => s.trim()).filter(Boolean);
 }
 
+/** Unique team members from owner, developer, QA, BA, page owner (sheet columns). */
+function projectTeamMembers(project, max = 6) {
+    const fields = [
+        project?.owner,
+        project?.developer,
+        project?.qa_engineer,
+        project?.ba,
+        project?.page_owner,
+    ];
+    const names = [];
+    const seen = new Set();
+    for (const raw of fields) {
+        for (const n of splitAssigneeNames(raw)) {
+            if (!isValidResourceName(n)) continue;
+            const key = n.toLowerCase();
+            if (seen.has(key)) continue;
+            seen.add(key);
+            names.push(n);
+        }
+    }
+    return max ? names.slice(0, max) : names;
+}
+
 /** Names that must not appear in the resource / availability map */
 function isValidResourceName(name) {
     const n = String(name || '').trim();
@@ -344,26 +367,82 @@ function getUniqueAlertProjects(alerts) {
 }
 
 /**
+ * Progress % for velocity forecasts.
+ * Sibling roadmap avg can be diluted by many not-started pages (e.g. 0/37 live → ~11%),
+ * which makes slip explode (+500d). Prefer the master sheet % in that case.
+ */
+function predictionProgress(project) {
+    const master = Math.round(parseFloat(project?.progress) || 0);
+    const disp = typeof projectDisplayProgress === 'function'
+        ? projectDisplayProgress(project)
+        : master;
+    const pages = Number(project?.roadmap?.total)
+        || parseInt(String(project?.total_pages ?? 0), 10)
+        || 0;
+    const done = Number(project?.roadmap?.live)
+        || parseInt(String(project?.completed_pages ?? 0), 10)
+        || 0;
+    if (master > 0 && pages >= 5 && done <= Math.max(1, pages * 0.05) && disp > 0 && disp < master) {
+        return master;
+    }
+    return disp > 0 ? disp : master;
+}
+
+/**
  * Velocity-based completion forecast (shared by Alerts at_risk bucket and Analytics).
  * Returns null when dates/progress are insufficient to project.
+ *
+ * High progress: project finish from historical velocity (start + elapsed / rate).
+ * Low progress: velocity explodes (11% → +500d); instead project remaining work at
+ * the original planned pace from today — a stable “days behind plan” style slip.
  */
 function computeCompletionPrediction(project, today) {
     const t = today ? startOfDay(today) : startOfDay(new Date());
     const ns = normalizeStage(project?.stage || '');
-    const dispProg = projectDisplayProgress(project);
+    const dispProg = predictionProgress(project);
     if (ns === 'Live' || !dispProg || dispProg <= 0 || !project.start_date || !project.release_date) return null;
-    const start = parseSmartDate(project.start_date);
-    const target = parseSmartDate(project.release_date);
+
+    const start = startOfDay(parseSmartDate(project.start_date));
+    const target = startOfDay(parseSmartDate(project.release_date));
     if (!start || !target || isNaN(start.getTime()) || isNaN(target.getTime())) return null;
+    if (target.getTime() <= start.getTime()) return null;
+
     const daysElapsed = Math.max(1, Math.round((t - start) / 86400000));
     const plannedDays = Math.max(1, Math.round((target - start) / 86400000));
-    const totalDaysEst = Math.min(
-        Math.round(daysElapsed / (dispProg / 100)),
-        plannedDays + 365
-    );
-    const projected = new Date(start.getTime() + totalDaysEst * 86400000);
-    const diffDays = Math.round((projected - target) / 86400000);
-    return { diffDays, projected, target, progress: dispProg, stage: ns };
+
+    const maxPipe = typeof MAX_PIPELINE_DAYS !== 'undefined' ? MAX_PIPELINE_DAYS : 730;
+    if (daysElapsed > maxPipe * 2) return null;
+
+    const rate = dispProg / 100;
+    const velocityTotal = Math.round(daysElapsed / rate);
+    const velocitySlip = velocityTotal - plannedDays;
+
+    // Below ~25% complete, historical velocity is not trustworthy for end dates.
+    const lowConfidence = dispProg < 25 && velocitySlip > plannedDays;
+
+    let projected;
+    let diffDays;
+    let capped = false;
+    if (lowConfidence) {
+        const remainingAtPlan = Math.round(plannedDays * (1 - rate));
+        projected = new Date(t.getTime() + remainingAtPlan * 86400000);
+        diffDays = Math.round((projected - target) / 86400000);
+    } else {
+        const maxEst = Math.max(plannedDays + maxPipe, maxPipe * 2);
+        const totalDaysEst = Math.min(Math.max(daysElapsed, velocityTotal), maxEst);
+        projected = new Date(start.getTime() + totalDaysEst * 86400000);
+        diffDays = Math.round((projected - target) / 86400000);
+        capped = velocityTotal > maxEst;
+    }
+
+    return {
+        diffDays,
+        projected,
+        target,
+        progress: dispProg,
+        stage: ns,
+        capped,
+    };
 }
 
 function computeAlerts(projects) {
@@ -410,6 +489,21 @@ function computeAlerts(projects) {
                     projected: pred.projected,
                     target: pred.target,
                     predProgress: pred.progress,
+                    capped: !!pred.capped,
+                });
+            } else if (
+                // Bug #5 fix: 0% progress + imminent deadline → at_risk (prediction returns null for 0% progress)
+                featureOn('AT_RISK_ZERO_PROGRESS')
+                && projectDisplayProgress(p) <= 0
+                && releaseSoon
+                && !postLive
+            ) {
+                at_risk.push({
+                    ...enriched,
+                    diffDays: 0,
+                    projected: new Date(today.getTime() + threshold * 86400000),
+                    target: release,
+                    predProgress: 0,
                 });
             } else if (releaseSoon && !postLive) {
                 upcoming.push(enriched);
@@ -545,8 +639,54 @@ function clickUpAssigneeName(assignees, index) {
     return String(a.username || a.email || a.name || '').trim();
 }
 
+/** All valid assignee display names from a ClickUp assignees array. */
+function clickUpAllAssigneeNames(assignees) {
+    if (!Array.isArray(assignees) || !assignees.length) return [];
+    const out = [];
+    const seen = new Set();
+    assignees.forEach(a => {
+        const n = String(a?.username || a?.email || a?.name || '').trim();
+        if (!isValidResourceName(n)) return;
+        const key = n.toLowerCase();
+        if (seen.has(key)) return;
+        seen.add(key);
+        out.push(n);
+    });
+    return out;
+}
+
 function isClickUpWorkspace(ws) {
     return !!(ws && ws.integrationType === 'clickup');
+}
+
+/**
+ * Digital Marketing (and similar ClickUp workspaces): all people are Content Creators.
+ * Streak / Sheets keep engineering roles (Developer, QA, BA, …).
+ */
+function isContentCreatorWorkspace(ws) {
+    const w = ws || (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
+    if (w.roleModel === 'content_creator' || w.peopleModel === 'content_creators') return true;
+    if (w.id === 'digital_marketing') return true;
+    return false;
+}
+
+function getContentCreatorRoleName(ws) {
+    const w = ws || (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
+    return (w.contentCreatorRole && String(w.contentCreatorRole).trim()) || 'Content Creator';
+}
+
+/** Roles used by Resource Intelligence / capacity for the active workspace. */
+function getIntelRoles(ws) {
+    if (isContentCreatorWorkspace(ws)) {
+        return [getContentCreatorRoleName(ws)];
+    }
+    return ['Developer', 'QA', 'BA', 'Owner', 'Page owner'];
+}
+
+/** Primary work role for assignment suggestions (Developer vs Content Creator). */
+function getPrimaryWorkRole(ws) {
+    if (isContentCreatorWorkspace(ws)) return getContentCreatorRoleName(ws);
+    return 'Developer';
 }
 
 /** Streak uses STAGE_FLOW; ClickUp workspaces may define clickupStageFlow. */
@@ -556,6 +696,32 @@ function getWorkspaceStageFlow(ws) {
         return w.clickupStageFlow;
     }
     return typeof STAGE_FLOW !== 'undefined' ? STAGE_FLOW : [];
+}
+
+/** Overview funnel stage order — engineering pipeline vs ClickUp marketing flow. */
+const STREAK_FUNNEL_STAGES = ['Planning', 'Development', 'QA', 'Release', 'Live'];
+
+function getFunnelStages(ws) {
+    const w = ws || (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
+    if (isClickUpWorkspace(w) && Array.isArray(w.clickupStageFlow) && w.clickupStageFlow.length) {
+        return w.clickupStageFlow.map(f => f.stage);
+    }
+    return STREAK_FUNNEL_STAGES.slice();
+}
+
+/** Bar colors for Overview Stage Funnel (aligned with Analytics heatmap). */
+function getFunnelStageColors(ws) {
+    const w = ws || (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
+    if (isClickUpWorkspace(w) && w.clickupStageFlow?.length) {
+        return {
+            Brief: '#A78BFA', Content: '#818CF8', Design: '#60A5FA',
+            Review: '#34D399', Publish: '#10B981', Live: '#1E8E3E',
+        };
+    }
+    return {
+        Planning: '#8B5CF6', Development: '#1A73E8', QA: '#F9AB00',
+        Release: '#EF4444', Live: '#1E8E3E',
+    };
 }
 
 /** Label for analytics/funnel units: pages (Sheets) vs tasks/deliverables (ClickUp). */
@@ -696,6 +862,8 @@ function mapClickUpTaskToProject(task, ws) {
         ? 'on_track'
         : normalizeStatus(statusRaw || 'on_track');
     
+    const creatorMode = isContentCreatorWorkspace(workspace);
+    const allAssignees = clickUpAllAssigneeNames(task.assignees);
     let owner = 'Unassigned';
     let developer = 'Unassigned';
     let qa_engineer = 'Unassigned';
@@ -710,7 +878,14 @@ function mapClickUpTaskToProject(task, ws) {
     let tags = (task.tags || []).map(t => t.name || t);
     let customHealth = '';
 
-    if (task.assignees && task.assignees.length > 0) {
+    if (creatorMode) {
+        // All ClickUp assignees are Content Creators — store joined names in developer
+        // so existing analytics/resource paths that read `developer` keep working.
+        owner = allAssignees[0] || 'Unassigned';
+        developer = allAssignees.length ? allAssignees.join(', ') : 'Unassigned';
+        qa_engineer = '—';
+        ba = '—';
+    } else if (task.assignees && task.assignees.length > 0) {
         owner = clickUpAssigneeName(task.assignees, 0) || 'Unassigned';
         developer = clickUpAssigneeName(task.assignees, 1) || 'Unassigned';
         qa_engineer = clickUpAssigneeName(task.assignees, 2) || 'Unassigned';
@@ -724,11 +899,11 @@ function mapClickUpTaskToProject(task, ws) {
 
             if (fname === 'owner' || fname === 'pm') {
                 owner = String(val);
-            } else if (fname === 'developer' || fname === 'dev') {
+            } else if (!creatorMode && (fname === 'developer' || fname === 'dev')) {
                 developer = String(val);
-            } else if (fname === 'qa' || fname === 'qaengineer') {
+            } else if (!creatorMode && (fname === 'qa' || fname === 'qaengineer')) {
                 qa_engineer = String(val);
-            } else if (fname === 'ba' || fname === 'businessanalyst') {
+            } else if (!creatorMode && (fname === 'ba' || fname === 'businessanalyst')) {
                 ba = String(val);
             } else if (fname === 'client' || fname === 'pagename') {
                 if (val) client = String(val);
@@ -775,13 +950,15 @@ function mapClickUpTaskToProject(task, ws) {
         owner,
         client,
         stage,
+        rawStage: statusRaw,
+        funnelStage: clickUpFlowStage(statusRaw, isDone, workspace),
         status,
         progress,
         start_date,
         release_date,
         priority: normalizePriority(priority),
         ba,
-        page_owner: owner,
+        page_owner: featureOn('CLICKUP_PAGE_OWNER_FIX') ? '—' : owner,  // Bug #2 fix: avoid double-counting in resource map
         cms: '—',
         developer,
         qa_engineer,
@@ -938,7 +1115,12 @@ function getClickUpMockData() {
 
 async function loadProjects(sheetUrl) {
     const ws = (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
-    if (ws.integrationType === 'clickup') {
+    const urlArg = String(sheetUrl || '').trim();
+    // Explicit published-sheet URL always loads CSV (login stats / forced sheet), even if
+    // AppState.activeWorkspace is ClickUp/Zoho from a previous session.
+    const forceSheet = !!urlArg && (/docs\.google\.com/i.test(urlArg) || /[?&]output=csv\b/i.test(urlArg));
+
+    if (!forceSheet && ws.integrationType === 'clickup') {
         console.log(`[Atlas] Loading ClickUp workspace: ${ws.name}`);
         const tasks = await loadClickUpTasks(ws.clickupListId, ws.clickupToken);
         const projects = tasks.map(t => mapClickUpTaskToProject(t, ws));
@@ -946,7 +1128,7 @@ async function loadProjects(sheetUrl) {
         return { projects, source: 'clickup' };
     }
 
-    const url = (sheetUrl || CONFIG.SHEET_CSV_URL || '').trim();
+    const url = (urlArg || (ws.sheetUrl || '') || CONFIG.SHEET_CSV_URL || '').trim();
     if (!url) {
         console.error('[Atlas] No sheet URL configured for this workspace.');
         return { projects: [], source: 'error' };
@@ -982,10 +1164,226 @@ function buildDetailSheetCsvUrl(gid, sheetBaseUrl) {
         const u = new URL(base);
         u.searchParams.set('output', 'csv');
         u.searchParams.set('gid', g);
+        u.searchParams.set('single', 'true');
         return u.toString();
     } catch (e) {
         console.warn('[Atlas] buildDetailSheetCsvUrl failed:', e);
         return null;
+    }
+}
+
+/** Normalize person name for roster ↔ delivery resource map matching. */
+function normalizePersonKey(name) {
+    return String(name || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+/** Guess role family from designation / department for capacity caps. */
+function roleFamilyFromDesignation(designation, department) {
+    const d = `${designation || ''} ${department || ''}`.toLowerCase();
+    if (/\bqa\b|quality/.test(d)) return 'QA';
+    if (/\bba\b|business analyst|product owner/.test(d)) return 'BA';
+    if (/marketing|branding|content|seo|social/.test(d)) return 'Content Creator';
+    if (/ui|ux|design/.test(d)) return 'Developer';
+    if (/devops|sre|infra/.test(d)) return 'Developer';
+    if (/project management|delivery|engineering manager|scrum/.test(d)) return 'Owner';
+    if (/director|leadership|hr|finance/.test(d)) return 'Owner';
+    if (/software|developer|engineer|architect|technical/.test(d)) return 'Developer';
+    return 'Developer';
+}
+
+function getResourceManagementConfig(ws) {
+    const w = ws || (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
+    return w.resourceManagement || CONFIG.RESOURCE_MANAGEMENT || null;
+}
+
+function getResourceManagementSheetUrl(ws) {
+    const cfg = getResourceManagementConfig(ws);
+    if (!cfg) return '';
+    if (cfg.csvUrl) return String(cfg.csvUrl).trim();
+    const w = ws || (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
+    const base = w.sheetUrl || CONFIG.SHEET_CSV_URL || '';
+    if (cfg.gid) return buildDetailSheetCsvUrl(cfg.gid, base) || '';
+    return '';
+}
+
+/**
+ * Parse Resource-management tab CSV into employee roster rows.
+ * Expected columns: Sl.No, Name, Department, Designation, Years at Valoriz, External Experience
+ */
+function parseResourceManagementCSV(csvText) {
+    const table = parseGenericTableCSV(csvText);
+    const headers = table.headers || [];
+    const norm = headers.map(h => normalizeHeaderForMatch(h));
+    const idx = (aliases) => {
+        for (const a of aliases) {
+            const i = norm.indexOf(a);
+            if (i >= 0) return i;
+        }
+        return -1;
+    };
+    const iNo = idx(['sl_no', 'sl.no', 'sno', 'si_no', 'id', 'employee_id', 'emp_id']);
+    const iName = idx(['name', 'employee_name', 'full_name', 'employee']);
+    const iDept = idx(['department', 'dept', 'team']);
+    const iDesig = idx(['designation', 'title', 'role', 'job_title']);
+    const iYears = idx(['years_at_valoriz', 'years_at_company', 'company_years', 'tenure']);
+    const iExt = idx(['external_experience', 'prior_experience', 'total_experience', 'experience']);
+
+    if (iName < 0) return [];
+
+    return (table.rows || []).map((row, rowIdx) => {
+        const name = String(row[iName] || '').trim();
+        if (!name) return null;
+        const department = iDept >= 0 ? String(row[iDept] || '').trim() : '';
+        const designation = iDesig >= 0 ? String(row[iDesig] || '').trim() : '';
+        const yearsAtCompany = iYears >= 0 ? parseFloat(String(row[iYears] || '').replace(/,/g, '')) : null;
+        const externalExp = iExt >= 0 ? parseFloat(String(row[iExt] || '').replace(/,/g, '')) : null;
+        const totalExp = (Number.isFinite(yearsAtCompany) ? yearsAtCompany : 0)
+            + (Number.isFinite(externalExp) ? externalExp : 0);
+        const code = iNo >= 0 && String(row[iNo] || '').trim()
+            ? String(row[iNo]).trim()
+            : String(rowIdx + 1);
+        return {
+            id: `emp-${code}-${normalizePersonKey(name).replace(/\s+/g, '-')}`,
+            employeeCode: code,
+            name,
+            nameKey: normalizePersonKey(name),
+            department: department || '—',
+            designation: designation || '—',
+            yearsAtCompany: Number.isFinite(yearsAtCompany) ? yearsAtCompany : null,
+            externalExperience: Number.isFinite(externalExp) ? externalExp : null,
+            totalExperience: totalExp > 0 ? Math.round(totalExp * 10) / 10 : null,
+            roleFamily: roleFamilyFromDesignation(designation, department),
+        };
+    }).filter(Boolean);
+}
+
+/**
+ * Join roster employees with delivery resource map (projects, conflicts, freeFrom).
+ */
+function enrichResourceRoster(employees, resourceMap) {
+    const map = resourceMap || {};
+    const byKey = {};
+    Object.values(map).forEach(p => {
+        const k = normalizePersonKey(p.name);
+        if (k) byKey[k] = p;
+    });
+
+    return (employees || []).map(emp => {
+        let person = byKey[emp.nameKey];
+        if (!person) {
+            // soft match: first+last token containment
+            const tokens = emp.nameKey.split(' ').filter(Boolean);
+            person = Object.values(map).find(p => {
+                const pk = normalizePersonKey(p.name);
+                if (!pk) return false;
+                if (pk === emp.nameKey) return true;
+                if (tokens.length >= 2 && tokens.every(t => pk.includes(t))) return true;
+                return false;
+            }) || null;
+        }
+
+        const activeCount = person ? (person.activeCount || 0) : 0;
+        const assignments = person
+            ? (person.assignments || []).filter(a => !a.completed)
+            : [];
+        const conflicts = person ? (person.conflicts || []) : [];
+        const maxCap = typeof getRoleCapacityMax === 'function'
+            ? getRoleCapacityMax(emp.roleFamily)
+            : 2;
+        const utilPct = maxCap > 0
+            ? Math.min(100, Math.round((activeCount / maxCap) * 100))
+            : 0;
+
+        let availability = 'Bench';
+        if (activeCount <= 0) availability = 'Bench';
+        else if (utilPct >= 85) availability = 'Fully Allocated';
+        else availability = 'Partially Allocated';
+
+        return {
+            ...emp,
+            matchedDeliveryName: person ? person.name : null,
+            activeCount,
+            assignments,
+            conflicts,
+            freeFrom: person ? person.freeFrom : null,
+            utilPct,
+            availability,
+            maxCapacity: maxCap,
+        };
+    });
+}
+
+function computeResourceRosterSummary(roster) {
+    const list = roster || [];
+    const byDept = {};
+    let allocated = 0;
+    let bench = 0;
+    let partial = 0;
+    let conflicts = 0;
+    let freeing30 = 0;
+    const today = typeof startOfDay === 'function' ? startOfDay(new Date()) : new Date();
+    const cut = today.getTime() + 30 * 86400000;
+
+    list.forEach(e => {
+        byDept[e.department] = (byDept[e.department] || 0) + 1;
+        if (e.availability === 'Bench') bench += 1;
+        else if (e.availability === 'Fully Allocated') allocated += 1;
+        else {
+            partial += 1;
+            allocated += 1;
+        }
+        if (e.conflicts && e.conflicts.length) conflicts += 1;
+        if (e.freeFrom && e.freeFrom.getTime && e.freeFrom.getTime() <= cut && e.activeCount > 0) {
+            freeing30 += 1;
+        }
+    });
+
+    const avgUtil = list.length
+        ? Math.round(list.reduce((s, e) => s + (e.utilPct || 0), 0) / list.length)
+        : 0;
+
+    return {
+        total: list.length,
+        allocated,
+        bench,
+        partial,
+        conflicts,
+        freeing30,
+        avgUtil,
+        byDepartment: byDept,
+    };
+}
+
+async function loadResourceManagementRoster(ws) {
+    if (typeof featureOn === 'function' && !featureOn('RESOURCE_TRACKER')) {
+        return { employees: [], meta: { skipped: true } };
+    }
+    const url = getResourceManagementSheetUrl(ws);
+    if (!url) {
+        return { employees: [], meta: { error: 'Resource-management sheet not configured for this workspace.' } };
+    }
+    try {
+        const response = await fetch(sheetFetchUrl(url), SHEET_FETCH_OPTIONS);
+        if (!response.ok) {
+            return { employees: [], meta: { error: `HTTP ${response.status} loading Resource-management sheet.` } };
+        }
+        const employees = parseResourceManagementCSV(await response.text());
+        const cfg = getResourceManagementConfig(ws) || {};
+        return {
+            employees,
+            meta: {
+                loadedAt: new Date().toISOString(),
+                source: cfg.tabName || 'Resource-management',
+                count: employees.length,
+                url,
+            },
+        };
+    } catch (e) {
+        return { employees: [], meta: { error: e.message || 'Failed to load Resource-management sheet.' } };
     }
 }
 
@@ -1109,8 +1507,12 @@ function computeRoadmapMetrics(p, hlist, rows) {
 
         const ps = idxProgress >= 0 ? roadmapCell(row, idxProgress) : '';
         const n = parseInt(ps, 10);
-        pctSum += (!isNaN(n)) ? Math.min(100, Math.max(0, n)) : 0;
-        pctN += 1;
+        // Bug #1 fix: only count rows with a real progress value — blank rows were pulling
+        // the average toward 0 (pctN incremented even when ps was empty).
+        if (!isNaN(n) || !featureOn('SIBLING_AVG_PCT_EXCLUDE_BLANK')) {
+            pctSum += !isNaN(n) ? Math.min(100, Math.max(0, n)) : 0;
+            pctN += 1;
+        }
     });
 
     const total = pctN;
@@ -1391,8 +1793,15 @@ function computeSiblingPages(hlist, rows) {
     return out;
 }
 
-/** Map a delivery unit to one of the five Overview funnel buckets. */
-function funnelBucketFromUnit(u) {
+/** Map a delivery unit to an Overview funnel bucket (workspace-aware). */
+function funnelBucketFromUnit(u, ws) {
+    const w = ws || (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
+    if (u?.funnelStage) return u.funnelStage;
+    if (isClickUpWorkspace(w)) {
+        const raw = u?.rawStage || u?.stage || '';
+        const done = !!(u?.reachedLive || u?.completed || normalizeStage(u?.stage || '') === 'Live');
+        return clickUpFlowStage(raw, done, w);
+    }
     let bucket = normalizeStage(u?.stage || u?.rawStage || '');
     if (bucket === 'Backlog') bucket = 'Planning';
     return bucket;
@@ -1403,7 +1812,8 @@ function funnelBucketFromUnit(u) {
  * Streak projects → sibling sheet pages; ClickUp / unlinked → one master row each.
  */
 function getFunnelStageCounts() {
-    const stages = ['Planning', 'Development', 'QA', 'Release', 'Live'];
+    const ws = (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
+    const stages = getFunnelStages(ws);
     const counts = {};
     const overdueByStage = {};
     const alertByStage = {};
@@ -1417,7 +1827,7 @@ function getFunnelStageCounts() {
     const units = typeof getAnalyticsUnits === 'function' ? getAnalyticsUnits() : [];
 
     units.forEach(u => {
-        const bucket = funnelBucketFromUnit(u);
+        const bucket = funnelBucketFromUnit(u, ws);
         if (!counts.hasOwnProperty(bucket)) return;
         counts[bucket]++;
 
@@ -1442,6 +1852,7 @@ function getFunnelStageCounts() {
  */
 function getAnalyticsUnits() {
     const projects = (typeof AppState !== 'undefined' && AppState.allProjects) ? AppState.allProjects : [];
+    const ws = (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
     const units = [];
     projects.forEach(p => {
         const pages = (p.roadmap?.hasSibling && Array.isArray(p.roadmap.pages) && p.roadmap.pages.length)
@@ -1449,6 +1860,11 @@ function getAnalyticsUnits() {
         if (pages) {
             pages.forEach(pg => {
                 if (!pg.page) return;
+                const done = !!(pg.completed || pg.reachedLive || normalizeStage(pg.stage || '') === 'Live');
+                const funnelStage = pg.funnelStage
+                    || (isClickUpWorkspace(ws)
+                        ? clickUpFlowStage(pg.rawStage || pg.stage || '', done, ws)
+                        : funnelBucketFromUnit({ stage: pg.stage, rawStage: pg.rawStage }, ws));
                 units.push({
                     id:               p.id,
                     name:             `${p.name} · ${pg.page}`,
@@ -1459,6 +1875,7 @@ function getAnalyticsUnits() {
                     owner:            p.owner,
                     stage:            pg.stage,
                     rawStage:         pg.rawStage || pg.stage,
+                    funnelStage,
                     status:           normalizeStatus(pg.status),
                     developer:        pg.developer,
                     qa_engineer:      pg.qa,
@@ -1470,11 +1887,18 @@ function getAnalyticsUnits() {
                     stageDurations:   pg.stageDurations || [],
                     pipelineExpectedDays: pg.pipelineExpectedDays,
                     pipelineActualDays: pg.pipelineActualDays,
-                    reachedLive:      !!pg.reachedLive,
+                    reachedLive:      done,
+                    completed:        !!pg.completed,
                     isPage:           true,
                 });
             });
         } else {
+            const rawStage = (p.rawStage || p.stage || '').trim();
+            const done = !!(p.clickupComplete || normalizeStage(p.stage || '') === 'Live');
+            const funnelStage = p.funnelStage
+                || (isClickUpWorkspace(ws)
+                    ? clickUpFlowStage(rawStage, done, ws)
+                    : funnelBucketFromUnit({ stage: p.stage, rawStage }, ws));
             units.push({
                 id:               p.id,
                 name:             p.name,
@@ -1484,7 +1908,8 @@ function getAnalyticsUnits() {
                 priority:         p.priority,
                 owner:            p.owner,
                 stage:            normalizeStage(p.stage || ''),
-                rawStage:         (p.stage || '').trim() || normalizeStage(p.stage || ''),
+                rawStage:         rawStage || normalizeStage(p.stage || ''),
+                funnelStage,
                 status:           normalizeStatus(p.status),
                 developer:        p.developer,
                 qa_engineer:      p.qa_engineer,
@@ -1494,7 +1919,7 @@ function getAnalyticsUnits() {
                 progress:         typeof projectDisplayProgress === 'function' ? projectDisplayProgress(p) : (p.progress || 0),
                 stageExpectations: [],
                 stageDurations:   [],
-                reachedLive:      false,
+                reachedLive:      done,
                 isPage:           false,
             });
         }
@@ -1521,7 +1946,12 @@ function getAnalyticsDrillUnits(type, value, extra) {
 
     switch (type) {
         case 'stage':
-            list = units.filter(u => ns(u.stage) === value);
+            list = units.filter(u => {
+                const bucket = typeof funnelBucketFromUnit === 'function'
+                    ? funnelBucketFromUnit(u)
+                    : ns(u.stage);
+                return bucket === value;
+            });
             title = `${value} — ${pluralUnit(list.length)}`;
             subtitle = `Delivery ${uPlur} currently in this stage`;
             break;
@@ -1666,6 +2096,13 @@ function projectFunnelStage(p) {
     if (featureOn('SIBLING_FUNNEL_STAGE') && p?.roadmap?.hasSibling && p.roadmap.funnelStage) {
         return p.roadmap.funnelStage;
     }
+    const ws = (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
+    if (isClickUpWorkspace(ws)) {
+        if (p?.funnelStage) return p.funnelStage;
+        const raw = p?.rawStage || '';
+        const done = !!(p?.clickupComplete || normalizeStage(p?.stage || '') === 'Live');
+        return clickUpFlowStage(raw, done, ws);
+    }
     return p?.stage ?? 'Backlog';
 }
 
@@ -1735,17 +2172,24 @@ function mapClickUpSubtaskToPage(subtask, parent, ws) {
     const clPct = clickUpChecklistProgress(subtask.checklists);
     if (clPct != null && !completed) progress = clPct;
 
+    const creatorMode = isContentCreatorWorkspace(ws);
+    const allAssignees = clickUpAllAssigneeNames(subtask.assignees);
+
     return {
         page:      subtask.name || 'Subtask',
         stage,
         rawStage:  statusRaw || stage,
+        funnelStage: flowStage,
         status:    normalizeStatus(statusRaw || parent?.status || ''),
         start,
         release,
         live,
         progress,
-        developer: clickUpAssigneeName(subtask.assignees, 0),
-        qa:        clickUpAssigneeName(subtask.assignees, 1),
+        developer: creatorMode
+            ? (allAssignees.length ? allAssignees.join(', ') : '')
+            : clickUpAssigneeName(subtask.assignees, 0),
+        qa:        creatorMode ? '' : clickUpAssigneeName(subtask.assignees, 1),
+        creators:  creatorMode ? allAssignees : undefined,
         completed,
         stageExpectations: [],
         stageDurations: durations,
@@ -1760,26 +2204,37 @@ function computeClickUpSubtaskPages(subtasks, parent, ws) {
     return subtasks.map(st => mapClickUpSubtaskToPage(st, parent, ws));
 }
 
-function computeClickUpRoadmapFromPages(parent, pages) {
+function computeClickUpRoadmapFromPages(parent, pages, ws) {
+    const workspace = ws || (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
     let live = 0;
     let inprog = 0;
     let pending = 0;
     let pctSum = 0;
+    let pctCountCU = 0;  // Bug #10 fix: separate denominator — only count subtasks with real progress
     pages.forEach(pg => {
-        const st = normalizeStage(pg.stage || '');
+        const fs = pg.funnelStage || clickUpFlowStage(pg.rawStage || pg.stage || '', pg.completed, workspace);
+        const st = isClickUpWorkspace(workspace) ? fs : normalizeStage(pg.stage || '');
         if (pg.completed || st === 'Live') live += 1;
-        else if (st === 'Backlog' || st === 'Planning') pending += 1;
+        else if (st === 'Backlog' || st === 'Planning' || st === 'Brief') pending += 1;
         else inprog += 1;
-        pctSum += pg.progress || 0;
+        // Bug #10 fix: exclude not-started subtasks (progress=0, not complete) from avg
+        // when flag is on; mirrors Bug #1 fix in computeRoadmapMetrics.
+        if (!featureOn('SIBLING_AVG_PCT_EXCLUDE_BLANK') || pg.completed || pg.progress > 0) {
+            pctSum += pg.progress || 0;
+            pctCountCU += 1;
+        }
     });
     const total = pages.length;
-    const avgPct = total ? Math.round(pctSum / total) : (parent.progress || 0);
+    const avgPct = pctCountCU > 0 ? Math.round(pctSum / pctCountCU) : (parent.progress || 0);
     const stageCounts = {};
     pages.forEach(pg => {
-        const b = normalizeStage(pg.stage || '');
+        const b = pg.funnelStage
+            || (isClickUpWorkspace(workspace)
+                ? clickUpFlowStage(pg.rawStage || pg.stage || '', pg.completed, workspace)
+                : normalizeStage(pg.stage || ''));
         stageCounts[b] = (stageCounts[b] || 0) + 1;
     });
-    let funnelStage = parent.stage;
+    let funnelStage = parent.funnelStage || parent.stage;
     let maxN = 0;
     Object.entries(stageCounts).forEach(([s, n]) => {
         if (n > maxN) { maxN = n; funnelStage = s; }
@@ -1787,8 +2242,10 @@ function computeClickUpRoadmapFromPages(parent, pages) {
     return { total, live, inprog, pending, avgPct, funnelStage };
 }
 
-function computeClickUpSubtaskAssignments(pages) {
+function computeClickUpSubtaskAssignments(pages, ws) {
     const out = [];
+    const creatorMode = isContentCreatorWorkspace(ws);
+    const creatorRole = getContentCreatorRoleName(ws);
     pages.forEach(pg => {
         const base = {
             page: pg.page,
@@ -1798,6 +2255,16 @@ function computeClickUpSubtaskAssignments(pages) {
             end: pg.completed ? (pg.live || pg.release) : pg.release,
             completed: pg.completed,
         };
+        if (creatorMode) {
+            const names = Array.isArray(pg.creators) && pg.creators.length
+                ? pg.creators
+                : splitAssigneeNames(pg.developer);
+            names.forEach(n => {
+                if (!isValidResourceName(n)) return;
+                out.push({ person: n, role: creatorRole, ...base });
+            });
+            return;
+        }
         if (isValidResourceName(pg.developer)) {
             out.push({ person: pg.developer, role: 'Developer', ...base });
         }
@@ -1844,8 +2311,8 @@ async function enrichClickUpWithSubtasks(projects, token, ws) {
             return;
         }
         const pages = computeClickUpSubtaskPages(subs, p, ws);
-        const assignments = computeClickUpSubtaskAssignments(pages);
-        const rm = computeClickUpRoadmapFromPages(p, pages);
+        const assignments = computeClickUpSubtaskAssignments(pages, ws);
+        const rm = computeClickUpRoadmapFromPages(p, pages, ws);
         list[idx].roadmap = {
             hasSibling: true,
             source: 'clickup',
@@ -1922,7 +2389,7 @@ async function loadClickUpProjectDetail(project, token, ws) {
     }
 
     const table = buildClickUpDeliverablesTable(pages);
-    const rm = computeClickUpRoadmapFromPages(project, pages);
+    const rm = computeClickUpRoadmapFromPages(project, pages, ws);
     return {
         hasSibling: true,
         source: 'clickup',
@@ -2432,11 +2899,29 @@ function buildResourceMap(projects) {
         return covered;
     }
 
+    const creatorMode = isContentCreatorWorkspace();
+    const creatorRole = getContentCreatorRoleName();
+
     projects.forEach(p => {
         const sib = featureOn('SIBLING_RESOURCE_MAP')
             && p.roadmap?.hasSibling
             && Array.isArray(p.roadmap.assignments) && p.roadmap.assignments.length
             ? p.roadmap.assignments : null;
+
+        if (creatorMode) {
+            // Digital Marketing: every assignee is a Content Creator (no Owner/BA/Dev/QA split).
+            if (sib) {
+                const covered = pushSiblingAssignments(p, sib);
+                push(p.developer, creatorRole, p, covered);
+            } else {
+                push(p.developer, creatorRole, p);
+                // Fallback: if developer empty, still count primary owner as creator.
+                if (!isValidResourceName(p.developer) && isValidResourceName(p.owner)) {
+                    push(p.owner, creatorRole, p);
+                }
+            }
+            return;
+        }
 
         push(p.owner, 'Owner', p);
         push(p.ba,    'BA',    p);
@@ -2538,11 +3023,22 @@ function getAttentionWeights() {
     return CONFIG.ATTENTION_WEIGHTS || {};
 }
 
+/** Default engineering roles; prefer getIntelRoles() for workspace-aware lists. */
 const INTEL_ROLES = ['Developer', 'QA', 'BA', 'Owner', 'Page owner'];
 
 function getRoleCapacityMax(role) {
     const m = CONFIG.CAPACITY?.maxProjectsPerPerson || {};
     return m[role] != null ? m[role] : 2;
+}
+
+function getActiveIntelRoles() {
+    return typeof getIntelRoles === 'function' ? getIntelRoles() : INTEL_ROLES;
+}
+
+function getActiveIntakeConfig() {
+    const ws = (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
+    if (ws.intake && typeof ws.intake === 'object') return ws.intake;
+    return CONFIG.INTAKE || {};
 }
 
 /**
@@ -2666,13 +3162,14 @@ function computeRoleCapacityForecast(projects, resourceMap, horizons) {
         weeks.push(weekStartMonday(ws));
     }
 
+    const intelRoles = typeof getIntelRoles === 'function' ? getIntelRoles() : INTEL_ROLES;
     const rolePeople = {};
-    INTEL_ROLES.forEach(role => { rolePeople[role] = new Set(); });
+    intelRoles.forEach(role => { rolePeople[role] = new Set(); });
 
     Object.values(resourceMap).forEach(person => {
         person.assignments.forEach(a => {
             if (a.completed) return;
-            if (INTEL_ROLES.includes(a.role)) rolePeople[a.role].add(person.name);
+            if (intelRoles.includes(a.role)) rolePeople[a.role].add(person.name);
         });
     });
 
@@ -2681,7 +3178,7 @@ function computeRoleCapacityForecast(projects, resourceMap, horizons) {
     let shortageWeeks = 0;
     const freeingNext30 = [];
 
-    INTEL_ROLES.forEach(role => {
+    intelRoles.forEach(role => {
         const names = [...rolePeople[role]];
         const max = getRoleCapacityMax(role);
         const weekRows = weeks.map((weekStart, wi) => {
@@ -2772,61 +3269,120 @@ function _avgUtilAcrossRoles(roles) {
 /**
  * Business intake slots from projected availability by role.
  */
-function computeBusinessIntakeCapacity(resourceMap) {
+/**
+ * Safe business intake: how many new projects of each size can start without
+ * overloading the roles that project size needs.
+ *
+ * Logic (aligned with the Role Busy-ness heatmap):
+ * 1. For each tier (small / medium / large), look at the required roles + headcount
+ *    and the project duration (30 / 60 / 90 days) from workspace intake config.
+ * 2. Over every week in that duration, read freeHeadcount from the capacity forecast
+ *    (people in that role with no overlapping assignment that week).
+ * 3. Take the *minimum* free headcount across those weeks — capacity must hold for
+ *    the whole project, not just week 1.
+ * 4. Slots = floor(minFree / headsRequired). If the heatmap is fully booked (0 free
+ *    every week), intake is 0.
+ */
+function computeBusinessIntakeCapacity(resourceMap, capacityForecast) {
     if (!intelligenceEnabled()) {
-        return { small: 0, medium: 0, large: 0, byHorizon: {}, narrativeInputs: {} };
+        return {
+            small: 0, medium: 0, large: 0,
+            byHorizon: {}, tiers: {}, narrativeInputs: {}, explanation: '',
+        };
     }
 
     const today = startOfDay(new Date());
-    const intake = CONFIG.INTAKE || {};
+    const ws = (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
+    const intake = (ws.intake && typeof ws.intake === 'object') ? ws.intake : (CONFIG.INTAKE || {});
+    const intelRoles = typeof getIntelRoles === 'function' ? getIntelRoles(ws) : INTEL_ROLES;
+    const primaryRole = typeof getPrimaryWorkRole === 'function' ? getPrimaryWorkRole(ws) : 'Developer';
     const byHorizon = { 30: {}, 60: {}, 90: {} };
 
-    function countFreeInRole(role, horizonDays) {
+    /** Free people in a role for the full horizon — min weekly freeHeadcount from forecast. */
+    function freeAcrossHorizon(role, horizonDays) {
+        const weeks = capacityForecast?.roles?.[role]?.weeks;
+        if (Array.isArray(weeks) && weeks.length) {
+            const n = Math.max(1, Math.min(weeks.length, Math.ceil(horizonDays / 7)));
+            const slice = weeks.slice(0, n);
+            return Math.min(...slice.map(w => Number(w.freeHeadcount) || 0));
+        }
+        // Fallback when forecast missing: people with no active work in this role now,
+        // or known freeFrom within the horizon (not completed-only ghosts).
         const cut = today.getTime() + horizonDays * 86400000;
         let n = 0;
-        Object.values(resourceMap).forEach(person => {
-            const hasRole = person.assignments.some(a =>
-                !a.completed && a.role === role
-            ) || person.assignments.some(a => a.role === role);
-            if (!hasRole && person.assignments.every(a => a.role !== role)) return;
-
-            const actsInRole = person.assignments.filter(a => !a.completed && a.role === role);
-            if (!actsInRole.length && person.assignments.some(a => a.role === role)) {
-                n += 1;
+        Object.values(resourceMap || {}).forEach(person => {
+            const activeInRole = (person.assignments || []).filter(a => !a.completed && a.role === role);
+            if (!activeInRole.length) {
+                // Only count if they appear on the role roster (have this role on any assignment).
+                const everRole = (person.assignments || []).some(a => a.role === role);
+                if (everRole && person.activeCount === 0) n += 1;
                 return;
             }
-            if (!actsInRole.length) return;
-
-            const allDated = actsInRole.every(a => a.end);
-            if (!allDated && person.activeCount > 0) return;
             const ff = person.freeFrom ? person.freeFrom.getTime() : null;
-            if (person.activeCount === 0 || (ff && ff <= cut)) n += 1;
+            if (ff && ff <= cut && person.activeCount > 0) {
+                // Freeing inside horizon — count only if their remaining load ends by cut.
+                const allDated = activeInRole.every(a => a.end);
+                if (allDated) n += 1;
+            }
         });
         return n;
     }
 
     [30, 60, 90].forEach(days => {
-        INTEL_ROLES.forEach(role => {
-            byHorizon[days][role] = countFreeInRole(role, days);
+        intelRoles.forEach(role => {
+            byHorizon[days][role] = freeAcrossHorizon(role, days);
         });
     });
 
-    function slotCount(tierKey) {
+    function tierSlots(tierKey) {
         const spec = intake[tierKey];
-        if (!spec) return 0;
-        const horizon = spec.days || 30;
-        const counts = (spec.roles || ['Developer']).map(r => byHorizon[horizon][r] || 0);
-        return Math.min(...counts);
+        if (!spec) {
+            return { slots: 0, heads: 1, days: 30, roles: [primaryRole], freeByRole: {}, limitingRole: primaryRole };
+        }
+        const heads = Math.max(1, parseInt(spec.heads, 10) || 1);
+        const days = spec.days || 30;
+        const roles = (Array.isArray(spec.roles) && spec.roles.length) ? spec.roles : [primaryRole];
+        const freeByRole = {};
+        let limitingRole = roles[0];
+        let minFree = Infinity;
+        roles.forEach(r => {
+            const free = byHorizon[days]?.[r] ?? freeAcrossHorizon(r, days);
+            freeByRole[r] = free;
+            if (free < minFree) {
+                minFree = free;
+                limitingRole = r;
+            }
+        });
+        if (!Number.isFinite(minFree)) minFree = 0;
+        const slots = Math.floor(minFree / heads);
+        return { slots, heads, days, roles, freeByRole, limitingRole, minFree };
+    }
+
+    const smallT = tierSlots('small');
+    const mediumT = tierSlots('medium');
+    const largeT = tierSlots('large');
+
+    const creatorMode = typeof isContentCreatorWorkspace === 'function' && isContentCreatorWorkspace(ws);
+    const roleWord = creatorMode ? (primaryRole + 's') : 'specialists';
+    let explanation = '';
+    if (smallT.slots === 0 && mediumT.slots === 0 && largeT.slots === 0) {
+        explanation = `No safe intake right now — ${roleWord.toLowerCase()} have no free capacity across the next planning windows (same signal as the busy-ness calendar above).`;
+    } else {
+        explanation = `Slots = free ${primaryRole} headcount sustained for the whole project length ÷ people required per project. Example: ${smallT.minFree} free for ${smallT.days}d ÷ ${smallT.heads} = ${smallT.slots} small.`;
     }
 
     return {
-        small: slotCount('small'),
-        medium: slotCount('medium'),
-        large: slotCount('large'),
+        small: smallT.slots,
+        medium: mediumT.slots,
+        large: largeT.slots,
         byHorizon,
+        tiers: { small: smallT, medium: mediumT, large: largeT },
+        explanation,
         narrativeInputs: {
-            devFree30: byHorizon[30].Developer || 0,
-            qaFree60: byHorizon[60].QA || 0,
+            devFree30: byHorizon[30].Developer || byHorizon[30][primaryRole] || 0,
+            qaFree60: byHorizon[60].QA || byHorizon[60][primaryRole] || 0,
+            primaryFree30: byHorizon[30][primaryRole] || 0,
+            primaryRole,
         },
     };
 }
@@ -2871,7 +3427,7 @@ function computeResourceIntelligence(projects, alerts) {
     const resourceMap = buildResourceMap(projects);
     const attentionRanked = computeAttentionRanked(projects, alerts, resourceMap);
     const capacityForecast = computeRoleCapacityForecast(projects, resourceMap);
-    const intakeRecommendation = computeBusinessIntakeCapacity(resourceMap);
+    const intakeRecommendation = computeBusinessIntakeCapacity(resourceMap, capacityForecast);
     const intelligenceSummary = buildIntelligenceSummary(
         projects, alerts, resourceMap, attentionRanked, capacityForecast, intakeRecommendation
     );

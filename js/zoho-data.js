@@ -369,13 +369,21 @@ function computeLeadershipBrief(entries, allEntries, options = {}) {
         });
         decisions.push('Ask PMO to resolve rejected timesheets before the next leadership review.');
     }
-    if (concentrationPct >= 45) {
+    if (summary.people === 1 && concentrationPct >= 45) {
         attention.push({
-            severity: concentrationPct >= 55 ? 'high' : 'medium',
-            title: 'Single-owner delivery risk',
-            detail: `${topPerson.person} carries ${concentrationPct}% of total effort. Progress is highly dependent on one contributor.`,
+            severity: 'high',
+            title: 'Single-contributor delivery risk',
+            detail: `${topPerson.person} is the only logged contributor (${concentrationPct}% of effort).`,
         });
-        decisions.push('Assign a secondary owner for critical workstreams and document handover plans.');
+        decisions.push('Confirm whether other team members should be logging time or assigned to this project.');
+    } else if (summary.people >= 2 && concentrationPct >= 50) {
+        const others = personAgg.slice(1, 4).map(p => p.person.split(' ')[0]).join(', ');
+        attention.push({
+            severity: concentrationPct >= 65 ? 'medium' : 'low',
+            title: 'Uneven workload across team',
+            detail: `Team of ${summary.people} active — ${topPerson.person} logs the most time (${concentrationPct}%)${others ? `; also contributing: ${others}${personAgg.length > 4 ? ', …' : ''}` : ''}.`,
+        });
+        decisions.push('Review workload balance — ensure critical paths are not blocked on one person.');
     }
     if (overheadPct > 22) {
         attention.push({

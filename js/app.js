@@ -56,7 +56,886 @@ const App = {
         AppState.setProjects(enriched, source);
         this._lastLiveFetch = Date.now();
         const roadmapCount = enriched.filter(p => p.roadmap?.hasSibling).length;
+        // Fire-and-forget company roster (+ Resource API shadow sync after load)
+        this.loadResourceRoster({ silent: true });
         return { projects: enriched, source, roadmapCount };
+    },
+
+    async syncResourceApi(opts = {}) {
+        if (typeof ResourceApi === 'undefined' || !ResourceApi.enabled()) {
+            AppState.resourceApiStatus = 'idle';
+            return;
+        }
+        const silent = !!opts.silent;
+        const full = !!opts.full; // include jobs + reco + trend (slower)
+        try {
+            const health = await ResourceApi.health();
+            if (!health.ok) {
+                AppState.resourceApiStatus = 'offline';
+                AppState.resourceApiMeta = {
+                    error: health.error || 'unreachable',
+                    at: new Date().toISOString(),
+                    hint: 'Run python serve.py (auto-starts API) or: cd services/resource-api && python run.py',
+                };
+                if (!silent) this.toast('Resource API offline — using sheet roster only', 'warning', 5000);
+                if (AppState.currentView === 'resources') this.renderCurrentView({ soft: true });
+                return;
+            }
+            AppState.resourceApiStatus = 'online';
+            const wsId = AppState.activeWorkspaceId || AppState.activeWorkspace?.id || 'default';
+
+            // Core sync (fast path) — parallel where safe
+            const syncP = ResourceApi.syncProjects(wsId, AppState.allProjects || []);
+            const importP = (AppState.resourceRoster || []).length
+                ? ResourceApi.importEmployees(AppState.resourceRoster, wsId)
+                : Promise.resolve(null);
+            const [sync, imported] = await Promise.all([syncP, importP]);
+
+            const [dash, emps, allocs, catalog] = await Promise.all([
+                ResourceApi.dashboard(),
+                ResourceApi.listEmployees(),
+                ResourceApi.listAllocations({ status: 'Active' }),
+                ResourceApi.listProjects({ workspace_id: wsId, include_completed: true }),
+            ]);
+
+            AppState.resourceApiEmployees = emps.ok ? (emps.data || []) : [];
+            AppState.resourceApiAllocations = allocs.ok ? (allocs.data || []) : [];
+            AppState.resourceApiProjects = catalog.ok ? (catalog.data || []) : [];
+
+            let jobs = null;
+            if (full) {
+                const attention = ResourceApi.buildAttentionMap(AppState.allProjects, AppState.attentionRanked);
+                jobs = await ResourceApi.runDailyJobs(wsId, attention);
+                const [benchRecos, trend, demand, notify] = await Promise.all([
+                    ResourceApi.recommendationsBench({ attention, workspaceId: wsId, limit: 5 }),
+                    ResourceApi.utilTrend(90),
+                    ResourceApi.demandForecast(wsId),
+                    ResourceApi.getNotifySettings(),
+                ]);
+                AppState.resourceBenchRecos = benchRecos.ok ? benchRecos.data : null;
+                AppState.resourceUtilTrend = trend.ok ? (trend.data || []) : [];
+                AppState.resourceDemandForecast = demand.ok ? (demand.data || []) : [];
+                if (notify.ok && notify.data) {
+                    AppState.notifySettings = {
+                        resource_manager_emails: notify.data.resource_manager_emails || '',
+                        staffing_contact_emails: notify.data.staffing_contact_emails || '',
+                    };
+                    try {
+                        localStorage.setItem('atlas_notify_settings', JSON.stringify(AppState.notifySettings));
+                    } catch { /* ignore */ }
+                }
+            }
+
+            AppState.resourceApiMeta = {
+                at: new Date().toISOString(),
+                health: health.data,
+                sync: sync.ok ? sync.data : { error: sync.error },
+                import: imported && imported.ok ? imported.data : (imported ? { error: imported.error } : null),
+                dashboard: dash.ok ? dash.data : null,
+                jobs: jobs && jobs.ok ? jobs.data : null,
+            };
+            if (!silent) {
+                const n = imported?.data?.total ?? AppState.resourceApiEmployees.length;
+                this.toast(`Resource API synced · ${n} employees`, 'success', 3500);
+            }
+            if (AppState.currentView === 'resources') this.renderCurrentView({ soft: true });
+        } catch (e) {
+            AppState.resourceApiStatus = 'offline';
+            AppState.resourceApiMeta = {
+                error: e.message || 'sync failed',
+                at: new Date().toISOString(),
+                hint: 'Run python serve.py (auto-starts API) or: cd services/resource-api && python run.py',
+            };
+            if (AppState.currentView === 'resources') this.renderCurrentView({ soft: true });
+        }
+    },
+
+    async loadResourceRoster(opts = {}) {
+        if (typeof featureOn === 'function' && !featureOn('RESOURCE_TRACKER')) return;
+        if (typeof loadResourceManagementRoster !== 'function') return;
+        const silent = !!opts.silent;
+        AppState.resourceRosterStatus = 'loading';
+        if (!silent && AppState.currentView === 'resources') this.renderCurrentView({ soft: true });
+        const { employees, meta } = await loadResourceManagementRoster(AppState.activeWorkspace);
+        AppState.setResourceRoster(employees, meta);
+        AppState.resourceRosterStatus = meta?.error ? 'error' : 'ready';
+        if (!silent) {
+            if (meta?.error) this.toast(meta.error, 'error', 5000);
+            else this.toast(`Loaded ${employees.length} people from Resource-management`, 'success', 3000);
+        }
+        if (AppState.currentView === 'resources') this.renderCurrentView({ soft: true });
+        // Keep API roster in sync after sheet reload
+        if (!opts.skipApiSync) this.syncResourceApi({ silent: true });
+    },
+
+    reloadResourceRoster() {
+        return this.loadResourceRoster({ silent: false });
+    },
+
+    setResourcesViewMode(mode) {
+        AppState.setResourcesViewMode(mode);
+        if (mode === 'manager' && !(AppState.resourceRoster || []).length
+            && AppState.resourceRosterStatus !== 'loading') {
+            this.loadResourceRoster({ silent: true });
+        }
+        this.renderCurrentView();
+    },
+
+    setResourcesManagerTab(tab) {
+        AppState.setResourcesManagerTab(tab);
+        if (tab === 'projects' && (AppState.allProjects || []).length
+            && typeof ResourceApi !== 'undefined' && ResourceApi.enabled()) {
+            this.syncResourceApi({ silent: true });
+        } else {
+            this.renderCurrentView({ soft: true });
+        }
+    },
+
+    setResourceRosterFilter(q) {
+        AppState.resourceRosterFilter = String(q || '');
+        const active = document.activeElement;
+        const wasSearch = active && active.classList && active.classList.contains('rm-search');
+        const sel = wasSearch ? active.selectionStart : null;
+        this.renderCurrentView({ soft: true });
+        if (wasSearch) {
+            const el = document.querySelector('.rm-emp-filters .rm-search') || document.querySelector('.rm-search');
+            if (el) {
+                el.focus();
+                if (sel != null && typeof el.setSelectionRange === 'function') {
+                    try { el.setSelectionRange(sel, sel); } catch (_) { /* ignore */ }
+                }
+            }
+        }
+    },
+
+    setResourceEmpDeptFilter(v) {
+        AppState.resourceEmpDeptFilter = String(v || '');
+        this.renderCurrentView({ soft: true });
+    },
+
+    setResourceEmpRoleFilter(v) {
+        AppState.resourceEmpRoleFilter = String(v || '');
+        this.renderCurrentView({ soft: true });
+    },
+
+    setResourceEmpAvailFilter(v) {
+        AppState.resourceEmpAvailFilter = String(v || '');
+        this.renderCurrentView({ soft: true });
+    },
+
+    clearResourceEmpFilters() {
+        AppState.resourceRosterFilter = '';
+        AppState.resourceEmpDeptFilter = '';
+        AppState.resourceEmpRoleFilter = '';
+        AppState.resourceEmpAvailFilter = '';
+        this.renderCurrentView({ soft: true });
+    },
+
+    exportResourceRosterCsv(kind) {
+        const roster = typeof enrichResourceRoster === 'function'
+            ? enrichResourceRoster(AppState.resourceRoster || [], AppState.resourceMap)
+            : (AppState.resourceRoster || []);
+        let rows = roster;
+        if (kind === 'bench') rows = roster.filter(e => e.availability === 'Bench');
+        const headers = kind === 'designation'
+            ? ['Designation', 'Count']
+            : ['Code', 'Name', 'Department', 'Designation', 'YearsAtCompany', 'ExternalExperience', 'TotalExperience', 'Availability', 'UtilPct', 'ActiveProjects', 'Projects'];
+        let lines;
+        if (kind === 'designation') {
+            const counts = {};
+            roster.forEach(e => { counts[e.designation] = (counts[e.designation] || 0) + 1; });
+            lines = Object.entries(counts).sort((a, b) => b[1] - a[1])
+                .map(([d, n]) => `"${String(d).replace(/"/g, '""')}",${n}`);
+        } else {
+            lines = rows.map(e => {
+                const projects = (e.assignments || []).map(a => a.projectName).join('; ');
+                const cells = [
+                    e.employeeCode, e.name, e.department, e.designation,
+                    e.yearsAtCompany ?? '', e.externalExperience ?? '', e.totalExperience ?? '',
+                    e.availability, e.utilPct, e.activeCount, projects,
+                ];
+                return cells.map(c => `"${String(c ?? '').replace(/"/g, '""')}"`).join(',');
+            });
+        }
+        const csv = [headers.join(','), ...lines].join('\n');
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `resource-roster-${kind || 'all'}-${new Date().toISOString().slice(0, 10)}.csv`;
+        a.click();
+        URL.revokeObjectURL(a.href);
+    },
+
+    canManageResources() {
+        if (typeof Auth === 'undefined' || !CONFIG.RBAC_ENABLED) return true;
+        return Auth.canPerformAction('export') || Auth.canPerformAction('refresh')
+            || (Auth.currentUser && Auth.currentUser.role === 'admin');
+    },
+
+    openAllocModal(employeeId, projectExternalId) {
+        if (!this.canManageResources()) {
+            this.toast('You do not have permission to allocate resources', 'warning');
+            return;
+        }
+        AppState.setResourcesManagerTab('projects');
+        if (projectExternalId) {
+            this.selectResourceProjectByExternalId(projectExternalId);
+        }
+        if (employeeId) {
+            this.ensureAllocDraft();
+            const id = String(employeeId);
+            const set = new Set(AppState.resourceAllocDraft.selectedEmployeeIds || []);
+            set.add(id);
+            AppState.resourceAllocDraft.selectedEmployeeIds = [...set];
+        }
+        this.renderCurrentView({ soft: true });
+    },
+
+    ensureAllocDraft() {
+        if (!AppState.resourceAllocDraft) {
+            AppState.resourceAllocDraft = {
+                selectedEmployeeIds: [],
+                allocationPct: 100,
+                projectRole: '',
+                startDate: new Date().toISOString().slice(0, 10),
+                endDate: '',
+                strict: false,
+            };
+        }
+        return AppState.resourceAllocDraft;
+    },
+
+    selectRmProject(catalogId, externalId) {
+        const cat = catalogId || '';
+        const ext = String(externalId || '');
+        if (cat) {
+            this.selectResourceProject(cat);
+            return;
+        }
+        if (ext) {
+            this.selectResourceProjectByExternalId(ext);
+            if (!AppState.resourceSelectedProjectId) {
+                AppState.resourceSelectedProjectExternalId = ext;
+                AppState.resourceProjectPaneMode = 'detail';
+                this.renderCurrentView({ soft: true });
+                this._resetRmProjectPaneScroll();
+            }
+        }
+    },
+
+    selectResourceProject(catalogId) {
+        AppState.resourceSelectedProjectId = catalogId || null;
+        AppState.resourceSelectedProjectExternalId = null;
+        AppState.resourceProjectForm = null;
+        AppState.resourceProjectPaneMode = catalogId ? 'detail' : 'empty';
+        if (catalogId) {
+            AppState.resourceAllocPeopleFilter = '';
+            this.ensureAllocDraft();
+            AppState.resourceAllocDraft.selectedEmployeeIds = [];
+        }
+        this.renderCurrentView({ soft: true });
+        this._resetRmProjectPaneScroll();
+    },
+
+    selectResourceProjectByExternalId(externalId) {
+        const ext = String(externalId || '');
+        if (!ext) return;
+        const row = (AppState.resourceApiProjects || []).find(p => p.external_id === ext || p.id === ext);
+        if (row?.id) {
+            AppState.resourceSelectedProjectId = row.id;
+            AppState.resourceSelectedProjectExternalId = null;
+            AppState.resourceProjectPaneMode = 'detail';
+            AppState.resourceProjectForm = null;
+            AppState.resourceAllocPeopleFilter = '';
+            this.ensureAllocDraft();
+            AppState.resourceAllocDraft.selectedEmployeeIds = [];
+        }
+        this.renderCurrentView({ soft: true });
+        this._resetRmProjectPaneScroll();
+    },
+
+    _resetRmProjectPaneScroll() {
+        requestAnimationFrame(() => {
+            const wrap = document.querySelector('.rm-proj-pane .rm-assign-table-wrap');
+            if (wrap) wrap.scrollTop = 0;
+        });
+    },
+
+    openProjectPaneCreate() {
+        if (!this.canManageResources()) {
+            this.toast('You do not have permission to manage projects', 'warning');
+            return;
+        }
+        AppState.setResourcesManagerTab('projects');
+        AppState.resourceSelectedProjectId = null;
+        AppState.resourceProjectPaneMode = 'create';
+        AppState.resourceProjectForm = {
+            id: '',
+            externalId: '',
+            name: '',
+            client: '',
+            releaseDate: '',
+            activityType: 'project',
+        };
+        this.renderCurrentView({ soft: true });
+    },
+
+    openProjectPaneEdit(catalogId) {
+        if (!this.canManageResources()) {
+            this.toast('You do not have permission to manage projects', 'warning');
+            return;
+        }
+        const id = catalogId || AppState.resourceSelectedProjectId;
+        const row = (AppState.resourceApiProjects || []).find(p => p.id === id);
+        if (!row) return;
+        AppState.resourceSelectedProjectId = id;
+        AppState.resourceProjectPaneMode = 'edit';
+        AppState.resourceProjectForm = {
+            id: row.id,
+            externalId: row.external_id,
+            name: row.name || '',
+            client: row.client || '',
+            releaseDate: row.release_date || '',
+            activityType: row.activity_type || 'project',
+        };
+        this.renderCurrentView({ soft: true });
+    },
+
+    cancelProjectPane() {
+        AppState.resourceProjectForm = null;
+        if (AppState.resourceSelectedProjectId) {
+            AppState.resourceProjectPaneMode = 'detail';
+        } else {
+            AppState.resourceProjectPaneMode = 'empty';
+        }
+        this.renderCurrentView({ soft: true });
+    },
+
+    closeAllocModal() {
+        AppState.resourceAllocPeopleFilter = '';
+        if (AppState.resourceSelectedProjectId) {
+            AppState.resourceProjectPaneMode = 'detail';
+            if (AppState.resourceAllocDraft) {
+                AppState.resourceAllocDraft.selectedEmployeeIds = [];
+            }
+        }
+        AppState.setResourcesManagerTab('projects');
+        this.renderCurrentView({ soft: true });
+    },
+
+    toggleAllocEmployee(employeeId, checked) {
+        const m = this.ensureAllocDraft();
+        const id = String(employeeId || '');
+        if (!id) return;
+        const set = new Set((m.selectedEmployeeIds || []).map(String));
+        if (checked) set.add(id);
+        else set.delete(id);
+        m.selectedEmployeeIds = [...set];
+
+        // Update all matching rows/checkboxes (support multi-select without full re-render)
+        document.querySelectorAll(`.rm-assign-row[data-id="${CSS.escape(id)}"]`).forEach(row => {
+            row.classList.toggle('rm-assign-row--on', !!checked);
+            const cb = row.querySelector('input[type="checkbox"]');
+            if (cb) cb.checked = !!checked;
+        });
+        this.updateAllocAssignFooter();
+        this._syncAllocSelectedChips();
+        this._syncAllocSelectAllCheckbox();
+    },
+
+    updateAllocAssignFooter() {
+        const m = AppState.resourceAllocDraft || {};
+        const n = (m.selectedEmployeeIds || []).length;
+        const pct = Number(m.allocationPct) || 100;
+        const countEl = document.getElementById('rm-alloc-selected-count');
+        if (countEl) countEl.textContent = `${n} people selected`;
+        const fteEl = document.getElementById('rm-alloc-total-fte');
+        if (fteEl) fteEl.textContent = `Total: ${n ? (Math.round((n * pct) / 10) / 10) : 0} FTE`;
+        const saveBtn = document.querySelector('.rm-proj-assign-form button[type="submit"]');
+        if (saveBtn) saveBtn.disabled = n === 0;
+    },
+
+    _syncAllocSelectAllCheckbox() {
+        const headerCb = document.querySelector('.rm-assign-table thead input[type="checkbox"]');
+        if (!headerCb) return;
+        const boxes = [...document.querySelectorAll('.rm-assign-table tbody input[name="employee_ids"]')];
+        if (!boxes.length) {
+            headerCb.checked = false;
+            headerCb.indeterminate = false;
+            return;
+        }
+        const nChecked = boxes.filter(b => b.checked).length;
+        headerCb.checked = nChecked === boxes.length;
+        headerCb.indeterminate = nChecked > 0 && nChecked < boxes.length;
+    },
+
+    _syncAllocSelectedChips() {
+        const host = document.getElementById('rm-alloc-selected-chips');
+        if (!host) return;
+        const ids = (AppState.resourceAllocDraft?.selectedEmployeeIds || []).map(String);
+        if (!ids.length) {
+            host.innerHTML = `<span class="rm-hint">Select one or more people below</span>`;
+            return;
+        }
+        const empMap = Object.fromEntries((AppState.resourceApiEmployees || []).map(e => [String(e.id), e]));
+        host.innerHTML = ids.map(id => {
+            const e = empMap[id];
+            const name = e?.full_name || id;
+            const initials = typeof getInitials === 'function' ? getInitials(name) : '?';
+            const color = typeof stringToColor === 'function' ? stringToColor(name) : '#64748b';
+            return `<span class="rm-alloc-chip">
+                <span class="rm-avatar rm-avatar--chip" style="background:${color}">${initials}</span>
+                ${typeof escapeHtml === 'function' ? escapeHtml(name) : name}
+                <button type="button" class="rm-alloc-chip-x" aria-label="Remove"
+                    onclick="event.preventDefault();App.toggleAllocEmployee('${id.replace(/'/g, "\\'")}', false)">×</button>
+            </span>`;
+        }).join('');
+    },
+
+    toggleAllocEmployeeRow(employeeId, event) {
+        if (event?.target?.closest('button, a, input, label, select, textarea')) return;
+        const id = String(employeeId || '');
+        if (!id) return;
+        const m = this.ensureAllocDraft();
+        const set = new Set((m.selectedEmployeeIds || []).map(String));
+        const next = !set.has(id);
+        this.toggleAllocEmployee(id, next);
+    },
+
+    selectVisibleAllocPeople(selectAll) {
+        const m = this.ensureAllocDraft();
+        const peopleQ = String(AppState.resourceAllocPeopleFilter || '').trim().toLowerCase();
+        const roleQ = String(AppState.resourceAllocRoleFilter || '').trim().toLowerCase();
+        let employees = [...(AppState.resourceApiEmployees || [])];
+        if (peopleQ) {
+            employees = employees.filter(e =>
+                String(e.full_name || '').toLowerCase().includes(peopleQ)
+                || String(e.email || '').toLowerCase().includes(peopleQ)
+                || String(e.department || '').toLowerCase().includes(peopleQ)
+                || String(e.designation || '').toLowerCase().includes(peopleQ));
+        }
+        if (roleQ) {
+            employees = employees.filter(e =>
+                String(e.designation || e.role_family || '').toLowerCase().includes(roleQ));
+        }
+        const set = new Set((m.selectedEmployeeIds || []).map(String));
+        employees.forEach(e => {
+            const id = String(e.id);
+            if (selectAll) set.add(id);
+            else set.delete(id);
+        });
+        m.selectedEmployeeIds = [...set];
+        this.renderCurrentView({ soft: true });
+    },
+
+    openProjectModal(prefill) {
+        AppState.setResourcesManagerTab('projects');
+        const p = prefill || {};
+        if (p.id || p.catalogId) {
+            this.openProjectPaneEdit(p.id || p.catalogId);
+        } else {
+            this.openProjectPaneCreate();
+            if (p.name || p.client || p.release_date || p.releaseDate) {
+                AppState.resourceProjectForm = {
+                    id: '',
+                    externalId: '',
+                    name: p.name || '',
+                    client: p.client || '',
+                    releaseDate: p.release_date || p.releaseDate || '',
+                    activityType: p.activity_type || 'project',
+                };
+            }
+        }
+    },
+
+    closeProjectModal() {
+        this.cancelProjectPane();
+    },
+
+    setResourceProjectFilter(q) {
+        AppState.resourceProjectFilter = String(q || '');
+        AppState.resourceProjectPage = 1;
+        const active = document.activeElement;
+        const was = active && active.classList && active.classList.contains('rm-project-search');
+        const sel = was ? active.selectionStart : null;
+        this.renderCurrentView({ soft: true });
+        if (was) {
+            const el = document.querySelector('.rm-project-search');
+            if (el) {
+                el.focus();
+                if (sel != null && typeof el.setSelectionRange === 'function') {
+                    try { el.setSelectionRange(sel, sel); } catch (_) { /* */ }
+                }
+            }
+        }
+    },
+
+    setResourceProjectListView(view) {
+        const ok = ['active', 'operational', 'recent', 'archived', 'all'];
+        let next = ok.includes(view) ? view : 'active';
+        if (next === 'all') next = 'active';
+        AppState.resourceProjectListView = next;
+        AppState.resourceProjectPage = 1;
+        this.renderCurrentView({ soft: true });
+    },
+
+    setResourceProjectPage(page) {
+        AppState.resourceProjectPage = Math.max(1, Number(page) || 1);
+        this.renderCurrentView({ soft: true });
+    },
+
+    setResourceAllocRoleFilter(q) {
+        AppState.resourceAllocRoleFilter = String(q || '');
+        this.renderCurrentView({ soft: true });
+    },
+
+    setAllocDraftPct(val) {
+        this.ensureAllocDraft();
+        AppState.resourceAllocDraft.allocationPct = Math.min(100, Math.max(1, Number(val) || 100));
+        this.updateAllocAssignFooter();
+    },
+
+    setResourceAllocPeopleFilter(q) {
+        AppState.resourceAllocPeopleFilter = String(q || '');
+        const active = document.activeElement;
+        const was = active && active.classList && active.classList.contains('rm-alloc-people-search');
+        const sel = was ? active.selectionStart : null;
+        this.renderCurrentView({ soft: true });
+        if (was) {
+            const el = document.querySelector('.rm-alloc-people-search');
+            if (el) {
+                el.focus();
+                if (sel != null && typeof el.setSelectionRange === 'function') {
+                    try { el.setSelectionRange(sel, sel); } catch (_) { /* */ }
+                }
+            }
+        }
+    },
+
+    setResourceAllocListFilter(q) {
+        AppState.resourceAllocListFilter = String(q || '');
+        const active = document.activeElement;
+        const was = active && active.classList && active.classList.contains('rm-alloc-list-search');
+        const sel = was ? active.selectionStart : null;
+        this.renderCurrentView({ soft: true });
+        if (was) {
+            const el = document.querySelector('.rm-alloc-list-search');
+            if (el) {
+                el.focus();
+                if (sel != null && typeof el.setSelectionRange === 'function') {
+                    try { el.setSelectionRange(sel, sel); } catch (_) { /* */ }
+                }
+            }
+        }
+    },
+
+    setResourceAllocListProjectFilter(v) {
+        AppState.resourceAllocListProjectFilter = String(v || '');
+        this.renderCurrentView({ soft: true });
+    },
+
+    setResourceAllocListDeptFilter(v) {
+        AppState.resourceAllocListDeptFilter = String(v || '');
+        this.renderCurrentView({ soft: true });
+    },
+
+    setResourceAllocListRoleFilter(v) {
+        AppState.resourceAllocListRoleFilter = String(v || '');
+        this.renderCurrentView({ soft: true });
+    },
+
+    setResourceAllocListStatusFilter(v) {
+        AppState.resourceAllocListStatusFilter = String(v || '');
+        this.renderCurrentView({ soft: true });
+    },
+
+    clearResourceAllocListFilters() {
+        AppState.resourceAllocListFilter = '';
+        AppState.resourceAllocListProjectFilter = '';
+        AppState.resourceAllocListDeptFilter = '';
+        AppState.resourceAllocListRoleFilter = '';
+        AppState.resourceAllocListStatusFilter = '';
+        this.renderCurrentView({ soft: true });
+    },
+
+    async submitProjectModal(formEl) {
+        if (!formEl || typeof ResourceApi === 'undefined') return;
+        const fd = new FormData(formEl);
+        const wsId = AppState.activeWorkspaceId || AppState.activeWorkspace?.id || 'default';
+        const form = AppState.resourceProjectForm || {};
+        const mode = AppState.resourceProjectPaneMode === 'edit' ? 'edit' : 'create';
+        const projectId = form.id || '';
+        const body = {
+            name: String(fd.get('name') || '').trim(),
+            client: String(fd.get('client') || '').trim() || null,
+            release_date: String(fd.get('release_date') || '').trim() || null,
+            activity_type: String(fd.get('activity_type') || 'project').trim() || 'project',
+        };
+        if (!body.name) {
+            this.toast('Project name is required', 'error');
+            return;
+        }
+        if (mode !== 'edit') {
+            const key = String(body.name).toLowerCase().replace(/\s+/g, ' ').trim();
+            const dup = (AppState.resourceApiProjects || []).find(p =>
+                String(p.name || '').toLowerCase().replace(/\s+/g, ' ').trim() === key
+            );
+            if (dup) {
+                const useExisting = confirm(
+                    `“${body.name}” already exists (synced as ${dup.external_id}).\n\nOK = open the existing project\nCancel = create another copy anyway`
+                );
+                if (useExisting) {
+                    AppState.resourceProjectForm = null;
+                    AppState.resourceSelectedProjectId = dup.id;
+                    AppState.resourceSelectedProjectExternalId = dup.external_id;
+                    AppState.resourceProjectPaneMode = 'detail';
+                    AppState.setResourcesManagerTab('projects');
+                    this.renderCurrentView({ soft: true });
+                    return;
+                }
+            }
+        }
+        const allocateAfter = fd.get('allocate_after') === 'on';
+        let res;
+        if (mode === 'edit' && projectId) {
+            res = await ResourceApi.updateProject(projectId, body);
+        } else {
+            res = await ResourceApi.createProject({
+                ...body,
+                workspace_id: wsId,
+                stage: 'Planning',
+                status: 'on_track',
+                priority: 'Medium',
+            });
+        }
+        if (!res.ok) {
+            this.toast(ResourceApi.formatError(res.data) || res.error || 'Save project failed', 'error', 6000);
+            return;
+        }
+        const saved = res.data || {};
+        this.toast(mode === 'edit' ? 'Project updated' : `Project “${saved.name || body.name}” added`, 'success', 3500);
+        AppState.resourceProjectForm = null;
+        await this.syncResourceApi({ silent: true });
+        if (mode === 'edit' && projectId) {
+            AppState.resourceSelectedProjectId = projectId;
+            AppState.resourceProjectPaneMode = 'detail';
+        } else if (saved.id) {
+            AppState.resourceSelectedProjectId = saved.id;
+            AppState.resourceProjectPaneMode = 'detail';
+            this.ensureAllocDraft();
+            AppState.resourceAllocDraft.selectedEmployeeIds = [];
+        } else if (allocateAfter && saved.external_id) {
+            this.selectResourceProjectByExternalId(saved.external_id);
+        } else {
+            AppState.resourceProjectPaneMode = AppState.resourceSelectedProjectId ? 'detail' : 'empty';
+        }
+        AppState.setResourcesManagerTab('projects');
+        this.renderCurrentView({ soft: true });
+    },
+
+    async setProjectActivityType(projectId, activityType) {
+        if (!this.canManageResources()) {
+            this.toast('You do not have permission to manage projects', 'warning');
+            return;
+        }
+        if (typeof ResourceApi === 'undefined') return;
+        const id = String(projectId || '').trim();
+        const type = String(activityType || 'project').trim() === 'operational' ? 'operational' : 'project';
+        if (!id) return;
+        const res = await ResourceApi.updateProject(id, { activity_type: type });
+        if (!res.ok) {
+            this.toast(ResourceApi.formatError(res.data) || res.error || 'Update failed', 'error', 5000);
+            return;
+        }
+        this.toast(type === 'operational' ? 'Marked as operational activity' : 'Marked as active project', 'success', 3000);
+        if (type === 'operational') AppState.resourceProjectListView = 'operational';
+        else AppState.resourceProjectListView = 'active';
+        await this.syncResourceApi({ silent: true });
+        AppState.resourceSelectedProjectId = id;
+        AppState.resourceProjectPaneMode = 'detail';
+        this.renderCurrentView({ soft: true });
+    },
+
+    async deleteResourceProject(projectId, projectName) {
+        if (!this.canManageResources()) {
+            this.toast('You do not have permission to delete projects', 'warning');
+            return;
+        }
+        if (typeof ResourceApi === 'undefined') return;
+
+        let id = String(projectId || '').trim();
+        // Resolve sheet/external id → catalog UUID when needed
+        if (id && !(AppState.resourceApiProjects || []).some(p => String(p.id) === id)) {
+            const byExt = (AppState.resourceApiProjects || []).find(p => String(p.external_id) === id);
+            if (byExt) id = String(byExt.id);
+        }
+        if (!id) {
+            this.toast('Sync the project to the API catalog before deleting', 'warning');
+            return;
+        }
+
+        const label = projectName || 'this project';
+        if (!confirm(`Delete “${label}”?\n\nActive allocations on it will be released. This cannot be undone.`)) return;
+
+        const res = await ResourceApi.deleteProject(id);
+        if (!res.ok) {
+            this.toast(ResourceApi.formatError(res.data) || res.error || 'Delete failed', 'error', 5000);
+            return;
+        }
+        const n = res.data?.allocations_released || 0;
+        this.toast(n ? `Project deleted · ${n} allocation(s) released` : 'Project deleted', 'success', 4000);
+        if (AppState.resourceSelectedProjectId === id
+            || AppState.resourceSelectedProjectExternalId === id) {
+            AppState.resourceSelectedProjectId = null;
+            AppState.resourceSelectedProjectExternalId = null;
+            AppState.resourceProjectPaneMode = 'empty';
+            AppState.resourceProjectForm = null;
+            AppState.resourceAllocDraft = null;
+        }
+        await this.syncResourceApi({ silent: true });
+    },
+
+    async deleteResourceEmployee(employeeId, employeeName) {
+        if (!this.canManageResources()) {
+            this.toast('You do not have permission to delete employees', 'warning');
+            return;
+        }
+        if (typeof ResourceApi === 'undefined') return;
+        const id = String(employeeId || '').trim();
+        if (!id) return;
+
+        const label = employeeName || 'this employee';
+        const allocCount = (AppState.resourceApiAllocations || []).filter(a => String(a.employee_id) === id).length;
+        const allocNote = allocCount
+            ? `\n\n${allocCount} active allocation(s) will also be removed.`
+            : '';
+        if (!confirm(`Delete “${label}” from the FTE roster?${allocNote}\n\nThis cannot be undone.`)) return;
+
+        const res = await ResourceApi.deleteEmployee(id);
+        if (!res.ok) {
+            this.toast(ResourceApi.formatError(res.data) || res.error || 'Delete failed', 'error', 5000);
+            return;
+        }
+        const n = res.data?.allocations_removed || 0;
+        this.toast(n ? `Employee deleted · ${n} allocation(s) removed` : 'Employee deleted', 'success', 4000);
+        if (AppState.resourceSelectedEmployeeId === id) {
+            AppState.resourceSelectedEmployeeId = null;
+        }
+        await this.syncResourceApi({ silent: true });
+    },
+
+    async submitAllocModal(formEl) {
+        if (!formEl || typeof ResourceApi === 'undefined') return;
+        const fd = new FormData(formEl);
+        const actor = (typeof Auth !== 'undefined' && Auth.currentUser && (Auth.currentUser.name || Auth.currentUser.displayName)) || 'manager';
+        const row = (AppState.resourceApiProjects || []).find(p => p.id === AppState.resourceSelectedProjectId);
+        const projectId = String(fd.get('project_external_id') || row?.external_id || '');
+        const fromForm = fd.getAll('employee_ids').map(String).filter(Boolean);
+        const fromState = (AppState.resourceAllocDraft?.selectedEmployeeIds || []).map(String);
+        // Prefer draft selection (multi-select source of truth); merge any checked boxes
+        const employeeIds = [...new Set(fromState.length ? [...fromState, ...fromForm] : fromForm)];
+        if (!projectId || !employeeIds.length) {
+            this.toast('Select a project and at least one person', 'error');
+            return;
+        }
+        const specifiedRole = String(fd.get('project_role') || '').trim();
+        const base = {
+            project_external_id: projectId,
+            workspace_id: AppState.activeWorkspaceId || AppState.activeWorkspace?.id || 'default',
+            allocation_pct: Number(fd.get('allocation_pct') || 100),
+            start_date: String(fd.get('start_date') || '') || null,
+            end_date: String(fd.get('end_date') || '') || null,
+            status: 'Active',
+            actor,
+            reason: 'manual_allocate',
+            strict: fd.get('strict') === 'on',
+        };
+
+        const empLookup = Object.fromEntries((AppState.resourceApiEmployees || []).map(e => [String(e.id), e]));
+
+        let ok = 0;
+        let failed = 0;
+        const warnings = [];
+        for (const employeeId of employeeIds) {
+            const emp = empLookup[employeeId];
+            const project_role = specifiedRole || emp?.designation || null;
+            const res = await ResourceApi.createAllocation({ ...base, project_role, employee_id: employeeId });
+            if (res.ok) {
+                ok += 1;
+                (res.data?.warnings || []).forEach(w => warnings.push(w));
+            } else {
+                failed += 1;
+            }
+        }
+
+        if (ok && !failed) {
+            const warn = [...new Set(warnings)].join('; ');
+            this.toast(
+                warn ? `Allocated ${ok} people (warning: ${warn})` : `Allocated ${ok} people to project`,
+                warn ? 'warning' : 'success',
+                5000
+            );
+        } else if (ok && failed) {
+            this.toast(`Allocated ${ok}, failed ${failed}`, 'warning', 6000);
+        } else {
+            this.toast('Allocation failed for selected people', 'error', 6000);
+            return;
+        }
+        AppState.resourceAllocPeopleFilter = '';
+        if (AppState.resourceAllocDraft) {
+            AppState.resourceAllocDraft.selectedEmployeeIds = [];
+        }
+        AppState.resourceProjectPaneMode = 'detail';
+        AppState.setResourcesManagerTab('projects');
+        await this.syncResourceApi({ silent: true });
+    },
+
+    async releaseApiAllocation(allocationId) {
+        if (!this.canManageResources()) {
+            this.toast('You do not have permission to release allocations', 'warning');
+            return;
+        }
+        if (!allocationId || typeof ResourceApi === 'undefined') return;
+        if (!confirm('Release this allocation?')) return;
+        const actor = (typeof Auth !== 'undefined' && Auth.currentUser && (Auth.currentUser.name || Auth.currentUser.displayName)) || 'manager';
+        const res = await ResourceApi.releaseAllocation(allocationId, actor, 'manual_release');
+        if (!res.ok) {
+            this.toast(res.error || 'Release failed', 'error');
+            return;
+        }
+        this.toast('Allocation released', 'success');
+        await this.syncResourceApi({ silent: true });
+    },
+
+    async allocateFromRecommendation(employeeId, projectExternalId) {
+        this.openAllocModal(employeeId, projectExternalId);
+    },
+
+    selectResourceEmployee(id) {
+        AppState.resourceSelectedEmployeeId = id || null;
+        this.renderCurrentView({ soft: true });
+    },
+
+    async downloadResourceApiReport(type) {
+        if (typeof ResourceApi === 'undefined' || !ResourceApi.enabled()) {
+            this.toast('Resource API offline', 'warning');
+            return;
+        }
+        const res = await ResourceApi.downloadReport(type);
+        if (!res.ok) this.toast(res.error || 'Download failed', 'error');
+        else this.toast('Report downloaded', 'success', 2500);
+    },
+
+    async runResourceDailyJobs() {
+        if (typeof ResourceApi === 'undefined') return;
+        const wsId = AppState.activeWorkspaceId || 'default';
+        const attention = ResourceApi.buildAttentionMap(AppState.allProjects, AppState.attentionRanked);
+        const res = await ResourceApi.runDailyJobs(wsId, attention);
+        if (!res.ok) this.toast(res.error || 'Jobs failed', 'error');
+        else {
+            this.toast('Daily jobs completed (release + email outbox + snapshot)', 'success', 4000);
+            await this.syncResourceApi({ silent: true, full: true });
+        }
     },
 
     async _bootDashboard() {
@@ -603,6 +1482,9 @@ const App = {
                 root.style.minHeight = '';
                 root.classList.remove('content-area--soft-update');
                 if (scrollEl) scrollEl.classList.remove('content-area-scrollable--soft-update');
+                if (typeof this._syncAllocSelectAllCheckbox === 'function') {
+                    this._syncAllocSelectAllCheckbox();
+                }
             });
         }
     },
@@ -657,6 +1539,11 @@ const App = {
         AtlasDD.closeAll();
 
         root.classList.toggle('content-area--performance', AppState.currentView === 'performance');
+        root.classList.toggle('content-area--resources', AppState.currentView === 'resources');
+        const scrollWrap = document.querySelector('.content-area-scrollable');
+        if (scrollWrap) {
+            scrollWrap.classList.toggle('content-area-scrollable--resources', AppState.currentView === 'resources');
+        }
         this.setProjectPageLayoutClass(AppState.currentView === 'project');
 
         const aiOpts = this._aiMountOpts();
@@ -707,6 +1594,7 @@ const App = {
                 break;
             case 'settings':
                 this._setViewContent(root, renderSettings());
+                if (typeof SettingsCtrl !== 'undefined') SettingsCtrl.loadNotifyEmails();
                 break;
             case 'project': {
                 const wantId = AppState.detailProjectId;
@@ -1077,6 +1965,21 @@ const App = {
         const isOpen = panel.classList.contains('res-detail-panel--open');
         panel.classList.toggle('res-detail-panel--open', !isOpen);
         if (icon) icon.classList.toggle('res-expand-icon--open', !isOpen);
+    },
+
+    /** Expand / shrink scheduling-conflict pairs (Show more ↔ Shrink). */
+    toggleConflictCard(cardId, hiddenCount) {
+        const more = document.getElementById(cardId + '-more');
+        const btn  = document.getElementById(cardId + '-btn');
+        if (!more || !btn) return;
+        const open = more.hasAttribute('hidden');
+        if (open) more.removeAttribute('hidden');
+        else more.setAttribute('hidden', '');
+        btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+        btn.classList.toggle('res-cfl-toggle--open', open);
+        const n = hiddenCount || more.querySelectorAll('.res-cfl-pair').length;
+        const moreEl = btn.querySelector('.res-cfl-toggle__more');
+        if (moreEl) moreEl.textContent = 'Show ' + n + ' more';
     },
 
     /** Switch the People section between 'table' (default) and 'cards' (original). */
@@ -1813,6 +2716,64 @@ const SettingsCtrl = (() => {
             Auth.resetSettings();
             rerender();
             App.toast('Reset to defaults', 'info');
+        },
+
+        async loadNotifyEmails() {
+            const apply = (data) => {
+                if (!data) return;
+                AppState.notifySettings = {
+                    resource_manager_emails: data.resource_manager_emails || '',
+                    staffing_contact_emails: data.staffing_contact_emails || '',
+                };
+                try {
+                    localStorage.setItem('atlas_notify_settings', JSON.stringify(AppState.notifySettings));
+                } catch { /* ignore */ }
+                const rm = document.getElementById('stg-rm-emails');
+                const sc = document.getElementById('stg-contact-emails');
+                if (rm) rm.value = AppState.notifySettings.resource_manager_emails;
+                if (sc) sc.value = AppState.notifySettings.staffing_contact_emails;
+            };
+            apply(AppState.notifySettings);
+            if (typeof ResourceApi === 'undefined' || !ResourceApi.enabled()) return;
+            const res = await ResourceApi.getNotifySettings();
+            if (res.ok && res.data) apply(res.data);
+        },
+
+        async saveNotifyEmails() {
+            const rmEl = document.getElementById('stg-rm-emails');
+            const scEl = document.getElementById('stg-contact-emails');
+            const payload = {
+                resource_manager_emails: (rmEl && rmEl.value) || '',
+                staffing_contact_emails: (scEl && scEl.value) || '',
+            };
+            AppState.notifySettings = { ...payload };
+            try {
+                localStorage.setItem('atlas_notify_settings', JSON.stringify(AppState.notifySettings));
+            } catch { /* ignore */ }
+
+            if (typeof ResourceApi === 'undefined' || !ResourceApi.enabled()) {
+                App.toast('Saved locally (Resource API offline)', 'warning');
+                return;
+            }
+            const res = await ResourceApi.saveNotifySettings(payload);
+            const status = document.getElementById('stg-notify-status');
+            if (!res.ok) {
+                App.toast(res.error || 'Failed to save notification emails', 'error');
+                if (status) status.textContent = 'Save failed — check Resource API.';
+                return;
+            }
+            if (res.data) {
+                AppState.notifySettings = {
+                    resource_manager_emails: res.data.resource_manager_emails || '',
+                    staffing_contact_emails: res.data.staffing_contact_emails || '',
+                };
+            }
+            App.toast('Release email settings saved', 'success');
+            if (status) {
+                const nRm = (res.data && res.data.resource_manager_emails_list || []).length;
+                const nSc = (res.data && res.data.staffing_contact_emails_list || []).length;
+                status.textContent = `Saved · ${nRm} manager email(s), ${nSc} contact email(s). Active projects listed for now.`;
+            }
         },
     };
 })();

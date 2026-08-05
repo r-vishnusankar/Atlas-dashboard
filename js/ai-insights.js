@@ -227,6 +227,27 @@ const AiInsights = {
             ? projectDisplayProgress(project)
             : project.progress;
         const rm = project.roadmap || {};
+        let roadmap = null;
+        if (rm.hasSibling) {
+            roadmap = {
+                total: rm.total,
+                live: rm.live,
+                in_progress: rm.inprog,
+                pending: rm.pending,
+                avg_pct: rm.avgPct,
+            };
+        } else if (typeof computeMetricsFromMaster === "function") {
+            // ClickUp tasks without subtasks still have master-row KPIs — do not send null roadmap.
+            const mm = computeMetricsFromMaster(project);
+            roadmap = {
+                total: mm.total,
+                live: mm.live,
+                in_progress: mm.inprog,
+                pending: mm.pending,
+                avg_pct: mm.avgPct,
+                note: "Single ClickUp task (no subtasks)",
+            };
+        }
         return {
             id: project.id,
             name: project.name,
@@ -244,13 +265,7 @@ const AiInsights = {
                 projected: pred.projected ? pred.projected.toISOString().slice(0, 10) : null,
                 target: pred.target ? pred.target.toISOString().slice(0, 10) : null,
             } : null,
-            roadmap: rm.hasSibling ? {
-                total: rm.total,
-                live: rm.live,
-                in_progress: rm.inprog,
-                pending: rm.pending,
-                avg_pct: rm.avgPct,
-            } : null,
+            roadmap,
         };
     },
 

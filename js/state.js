@@ -42,6 +42,61 @@ const AppState = {
     dataSource:  'sheets',  // 'sheets' | 'error'
     alerts:      { overdue:[], at_risk:[], upcoming:[], stalled:[] },
     _intelligence: null,
+    /** Resources page: 'delivery' (existing) | 'manager' (company roster tracker) */
+    resourcesViewMode: (() => {
+        const saved = localStorage.getItem('atlas_resources_view_mode');
+        return saved === 'manager' ? 'manager' : 'delivery';
+    })(),
+    resourcesManagerTab: (() => {
+        const saved = localStorage.getItem('atlas_resources_manager_tab');
+        const ok = ['dashboard', 'employees', 'projects', 'allocations', 'bench', 'reports'];
+        return ok.includes(saved) ? saved : 'dashboard';
+    })(),
+    resourceRoster: [],
+    resourceRosterMeta: null,  // { loadedAt, source, error }
+    resourceRosterStatus: 'idle', // idle | loading | ready | error
+    resourceRosterFilter: '',
+    resourceEmpDeptFilter: '',
+    resourceEmpRoleFilter: '',
+    resourceEmpAvailFilter: '',
+    /** Resource Tracker API shadow sync status */
+    resourceApiStatus: 'idle', // idle | online | offline
+    resourceApiMeta: null,     // health / last sync info
+    notifySettings: (() => {
+        try {
+            return JSON.parse(localStorage.getItem('atlas_notify_settings') || 'null') || {
+                resource_manager_emails: '',
+                staffing_contact_emails: '',
+            };
+        } catch {
+            return { resource_manager_emails: '', staffing_contact_emails: '' };
+        }
+    })(),
+    resourceApiEmployees: [],  // from API when online
+    resourceApiAllocations: [],
+    resourceApiProjects: [],   // catalog projects (synced + manually added)
+    resourceBenchRecos: null,  // { employees: [...] }
+    resourceUtilTrend: [],
+    resourceDemandForecast: [],
+    resourceSelectedEmployeeId: null,
+    /** Projects tab master-detail */
+    resourceSelectedProjectId: null,   // catalog row id (UUID)
+    resourceSelectedProjectExternalId: null, // sheet external id when not yet in API
+    resourceProjectPaneMode: 'empty', // empty | create | edit | detail
+    resourceProjectForm: null,        // { id, externalId, name, client, releaseDate }
+    resourceAllocDraft: null,         // { selectedEmployeeIds, allocationPct, projectRole, startDate, endDate, strict }
+    resourceProjectFilter: '',
+    resourceProjectListView: 'active', // active | operational | recent | archived
+    resourceProjectPage: 1,
+    resourceAllocPeopleFilter: '',
+    resourceAllocRoleFilter: '',
+    /** Allocations tab list filters */
+    resourceAllocListFilter: '',
+    resourceAllocListProjectFilter: '',
+    resourceAllocListDeptFilter: '',
+    resourceAllocListRoleFilter: '',
+    resourceAllocListStatusFilter: '',
+
     pipelineMode:  'kanban',  // 'kanban' | 'timeline'
     timelineMode:  'gantt',   // 'gantt' | 'calendar'
     timelineZoom:  6,          // months to show in gantt: 3 | 6 | 12
@@ -122,6 +177,9 @@ const AppState = {
     },
 
     // ── Computed ──────────────────────────────
+    /** Alias for delivery sheet projects (Project tab). */
+    get projects() { return this.allProjects; },
+
     get filteredProjects() {
         let projects = [...this.allProjects];
 
@@ -193,7 +251,7 @@ const AppState = {
         const liveByMonth = {};
         units.filter(p => p.actual_live_date).forEach(p => {
             const date = parseSmartDate(p.actual_live_date);
-            if (!isNaN(date)) {
+            if (!isNaN(date.getTime())) {  // Bug #6 fix: use .getTime() — consistent with rest of codebase
                 const month = date.toLocaleString('default', { month: 'short' });
                 liveByMonth[month] = (liveByMonth[month] || 0) + 1;
             }
@@ -283,6 +341,23 @@ const AppState = {
 
     setSort(key) {
         this.sort = key;
+    },
+
+    setResourcesViewMode(mode) {
+        this.resourcesViewMode = mode === 'manager' ? 'manager' : 'delivery';
+        localStorage.setItem('atlas_resources_view_mode', this.resourcesViewMode);
+    },
+
+    setResourcesManagerTab(tab) {
+        const ok = ['dashboard', 'employees', 'projects', 'allocations', 'bench', 'reports'];
+        this.resourcesManagerTab = ok.includes(tab) ? tab : 'dashboard';
+        localStorage.setItem('atlas_resources_manager_tab', this.resourcesManagerTab);
+    },
+
+    setResourceRoster(list, meta) {
+        this.resourceRoster = Array.isArray(list) ? list : [];
+        this.resourceRosterMeta = meta || null;
+        this.resourceRosterStatus = meta?.error ? 'error' : (this.resourceRoster.length ? 'ready' : 'ready');
     },
 
     hasActiveFilters() {

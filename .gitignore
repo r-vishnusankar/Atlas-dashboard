@@ -2,3 +2,7 @@
 __pycache__/
 *.pyc
 .python-version
+services/resource-api/.venv/
+services/resource-api/resource_tracker.db
+services/resource-api/.env
+services/resource-api/api_startup.log

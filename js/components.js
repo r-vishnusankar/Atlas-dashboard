@@ -22,8 +22,21 @@ const Icons = {
     music: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>',
     globe: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>',
     handshake: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 12v3a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-3"/><path d="M12 17v-5"/><path d="M8 8l4-4 4 4"/></svg>',
-    checkIcon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>'
+    checkIcon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>',
+    alert: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
+    users: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
+    calendar: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>',
+    trendUp: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>',
+    briefcase: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/></svg>',
+    checkCircle: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>',
+    zap: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>',
+    pause: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>',
 };
+
+/** Section title with a professional SVG icon (no emoji). */
+function sectionTitleWithIcon(iconSvg, label) {
+    return `<span class="ui-title-with-icon">${iconSvg}<span>${label}</span></span>`;
+}
 
 const PASTELS = ['bg-peach', 'bg-violet', 'bg-mint', 'bg-blue', 'bg-yellow'];
 
@@ -141,12 +154,11 @@ function alertCardReason(p, bucket) {
                 secondary: `Target: ${formatDateShort(p.release_date)}`,
             };
         case 'at_risk': {
-            const proj = p.projected || null;
             const tgt = p.target || (p.release_date ? parseSmartDate(p.release_date) : null);
             const pct = p.predProgress != null ? p.predProgress : projectDisplayProgress(p);
             return {
-                primary: p.diffDays != null ? `+${p.diffDays}d projected slip` : '—',
-                secondary: `Proj ${fmtShort(proj)} vs ${fmtShort(tgt)} · ${pct}%`,
+                primary: tgt && !isNaN(tgt.getTime()) ? `Target ${fmtShort(tgt)}` : 'Likely miss',
+                secondary: `${pct}% complete`,
             };
         }
         case 'stalled': {
@@ -189,7 +201,11 @@ function buildVelocitySparkline(months = 6) {
         if (!d || isNaN(d.getTime())) return;
         const mIdx = buckets.findIndex((_, i) => {
             const bStart = new Date(today.getFullYear(), today.getMonth() - (months - 1 - i), 1);
-            const bEnd   = new Date(today.getFullYear(), today.getMonth() - (months - 1 - i - 1), 0);
+            // Bug #9 fix: for the current month (last bucket), use today as end so go-lives
+            // this month are counted. Previously bEnd resolved to last day of prior month.
+            const bEnd = (featureOn('SPARKLINE_MONTH_FIX') && i === months - 1)
+                ? today
+                : new Date(today.getFullYear(), today.getMonth() - (months - 1 - i - 1), 0);
             return d >= bStart && d <= bEnd;
         });
         if (mIdx >= 0) buckets[mIdx].count++;
@@ -208,35 +224,35 @@ function buildSmartInsights() {
 
     // 1. Overdue
     if (alerts.overdue.length) {
-        insights.push({ icon: '🚨', count: alerts.overdue.length, text: `project${alerts.overdue.length > 1 ? 's' : ''} overdue`, severity: 'critical', onclick: "App.navigate('alerts')", detail: alerts.overdue[0]?.name });
+        insights.push({ icon: Icons.alert, count: alerts.overdue.length, text: `project${alerts.overdue.length > 1 ? 's' : ''} overdue`, severity: 'critical', onclick: "App.navigate('alerts')", detail: alerts.overdue[0]?.name });
     }
 
     // 2. Releasing soon (alert engine)
     if (alerts.upcoming.length) {
-        insights.push({ icon: '📅', count: alerts.upcoming.length, text: `releasing soon`, severity: 'warning', onclick: "App.navigate('alerts')", detail: alerts.upcoming[0]?.name });
+        insights.push({ icon: Icons.calendar, count: alerts.upcoming.length, text: `releasing soon`, severity: 'warning', onclick: "App.navigate('alerts')", detail: alerts.upcoming[0]?.name });
     }
 
     // 2b. Predictive likely miss (alert engine)
     if (alerts.at_risk.length) {
-        insights.push({ icon: '⚠️', count: alerts.at_risk.length, text: `likely to miss deadline`, severity: 'warning', onclick: "App.navigate('alerts')", detail: alerts.at_risk[0]?.name });
+        insights.push({ icon: Icons.alert, count: alerts.at_risk.length, text: `likely to miss deadline`, severity: 'warning', onclick: "App.navigate('alerts')", detail: alerts.at_risk[0]?.name });
     }
 
     // 3. Resource conflicts
     const conflictCount = Object.values(resMap).filter(p => p.conflicts.length > 0).length;
     if (conflictCount) {
-        insights.push({ icon: '⚡', count: conflictCount, text: `resource conflict${conflictCount > 1 ? 's' : ''}`, severity: 'warning', onclick: "App.navigate('resources')", detail: 'Check bandwidth' });
+        insights.push({ icon: Icons.zap, count: conflictCount, text: `resource conflict${conflictCount > 1 ? 's' : ''}`, severity: 'warning', onclick: "App.navigate('resources')", detail: 'Check bandwidth' });
     }
 
     // 4. Recently shipped
     const lastShipped = computeOverviewDateMetrics(all, today).recentlyLive[0];
     if (lastShipped) {
         const { badge, badgeColor } = getLaunchTimingBadge(lastShipped, today);
-        insights.push({ icon: '✅', count: null, text: `last shipped${badge ? ' · ' + badge : ''}`, severity: 'success', onclick: `App.handleCardClick('${lastShipped.id}')`, detail: lastShipped.name });
+        insights.push({ icon: Icons.checkCircle, count: null, text: `last shipped${badge ? ' · ' + badge : ''}`, severity: 'success', onclick: `App.handleCardClick('${lastShipped.id}')`, detail: lastShipped.name });
     }
 
     // 5. Stalled projects
     if (alerts.stalled?.length) {
-        insights.push({ icon: '⏸', count: alerts.stalled.length, text: `stalled project${alerts.stalled.length > 1 ? 's' : ''}`, severity: 'info', onclick: "App.navigate('alerts')", detail: 'No recent progress' });
+        insights.push({ icon: Icons.pause, count: alerts.stalled.length, text: `stalled project${alerts.stalled.length > 1 ? 's' : ''}`, severity: 'info', onclick: "App.navigate('alerts')", detail: 'No recent progress' });
     }
 
     // 6. Stage bottleneck (stage with most alert-flagged projects)
@@ -247,7 +263,7 @@ function buildSmartInsights() {
     });
     const bottleneck = Object.entries(stagePressure).sort((a, b) => b[1] - a[1])[0];
     if (bottleneck && bottleneck[1] >= 2) {
-        insights.push({ icon: '🔴', count: null, text: `bottleneck: ${bottleneck[0]}`, severity: 'critical', onclick: "App.navigate('pipeline')", detail: `${bottleneck[1]} issues` });
+        insights.push({ icon: Icons.alert, count: null, text: `bottleneck: ${bottleneck[0]}`, severity: 'critical', onclick: "App.navigate('pipeline')", detail: `${bottleneck[1]} issues` });
     }
 
     // 7. Avg progress this month
@@ -368,9 +384,13 @@ function renderInsightStrip() {
 
     const cards = insights.map(ins => {
         const c = colorMap[ins.severity] || colorMap.neutral;
+        const iconHtml = ins.icon
+            ? `<div class="ov-insight-icon" style="color:${c.text}" aria-hidden="true">${ins.icon}</div>`
+            : '';
         return `
         <div class="ov-insight-card" style="background:${c.bg};border-color:${c.border};"
              onclick="${ins.onclick}" title="${escapeHtml(ins.detail || '')}">
+            ${iconHtml}
             <div class="ov-insight-body">
                 ${ins.count !== null ? `<div class="ov-insight-count" style="color:${c.text}">${ins.count}</div>` : ''}
                 <div class="ov-insight-text">${ins.text}</div>
@@ -381,6 +401,24 @@ function renderInsightStrip() {
     }).join('');
 
     return `<div class="ov-insight-strip">${cards}</div>`;
+}
+
+/** Stacked avatars for owner + developer + QA + BA on overview cards. */
+function renderProjectTeamAvatars(project, maxShow = 3) {
+    const team = typeof projectTeamMembers === 'function' ? projectTeamMembers(project, maxShow + 3) : [];
+    if (!team.length) {
+        const fallback = project?.owner || '?';
+        return `<div class="ov-risk-avatar" style="background:${stringToColor(fallback)}" title="${escapeHtml(fallback)}">${getInitials(fallback)}</div>`;
+    }
+    const shown = team.slice(0, maxShow);
+    const extra = team.length - shown.length;
+    const avatars = shown.map((name, i) =>
+        `<div class="ov-risk-avatar ov-team-avatar" style="background:${stringToColor(name)};z-index:${10 - i}" title="${escapeHtml(name)}">${getInitials(name)}</div>`
+    ).join('');
+    const more = extra > 0
+        ? `<span class="ov-team-more" title="${escapeHtml(team.slice(maxShow).join(', '))}">+${extra}</span>`
+        : '';
+    return `<div class="ov-team-avatars" title="${escapeHtml(team.join(', '))}">${avatars}${more}</div>`;
 }
 
 function renderAtRiskNow() {
@@ -395,20 +433,23 @@ function renderAtRiskNow() {
     const rows = risky.map(p => {
         const bucket = alertBucketFor(p.id, AppState.alerts);
         const meta   = alertBadgeMeta(bucket);
-        const init   = getInitials(p.owner);
-        const avc    = stringToColor(p.owner);
+        const team   = typeof projectTeamMembers === 'function' ? projectTeamMembers(p) : [];
         const prog   = projectDisplayProgress(p) || 0;
         const pOffset = +(CIRC_SM * (1 - prog / 100)).toFixed(1);
         const reason = alertCardReason(p, bucket);
 
-        let daysText = reason.primary;
+        // Hide projected slip on Needs Attention cards (unreliable for low-progress projects).
+        let daysText = bucket === 'at_risk' ? '' : reason.primary;
         let daysColor = 'var(--text-muted)';
         if (bucket === 'overdue') daysColor = '#D93025';
-        else if (bucket === 'at_risk') daysColor = '#F59E0B';
         else if (bucket === 'stalled') daysColor = '#3B82F6';
         else if (p.daysToRelease != null) {
             daysColor = p.daysToRelease < 0 ? '#D93025' : p.daysToRelease <= 3 ? '#F59E0B' : 'var(--text-muted)';
         }
+
+        const teamHint = team.length > 1
+            ? `<span style="font-size:10px;color:var(--text-muted);">${team.length} people</span>`
+            : '';
 
         return `
         <div class="ov-risk-item" style="border-left:3px solid ${meta.color};background:${meta.bg};"
@@ -427,11 +468,12 @@ function renderAtRiskNow() {
                 <div class="ov-risk-meta">
                     <span class="ov-risk-badge" style="background:${meta.color}22;color:${meta.color};">${meta.label}</span>
                     <span style="font-size:11px;color:var(--text-muted);">${escapeHtml(p.stage)}</span>
+                    ${teamHint}
                 </div>
             </div>
             <div class="ov-risk-right">
                 ${daysText ? `<div class="ov-risk-days" style="color:${daysColor}">${daysText}</div>` : ''}
-                <div class="ov-risk-avatar" style="background:${avc}" title="${escapeHtml(p.owner)}">${init}</div>
+                ${renderProjectTeamAvatars(p)}
             </div>
         </div>`;
     }).join('');
@@ -488,17 +530,17 @@ function renderUpcomingLaunches() {
 }
 
 function renderStageFunnel() {
+    const ws = (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
     const funnel = typeof getFunnelStageCounts === 'function'
         ? getFunnelStageCounts()
-        : { stages: ['Planning','Development','QA','Release','Live'], counts: AppState.stageCounts, overdueByStage: {}, alertByStage: {} };
+        : { stages: getFunnelStages ? getFunnelStages(ws) : ['Planning','Development','QA','Release','Live'], counts: AppState.stageCounts, overdueByStage: {}, alertByStage: {}, total: 0 };
     const { stages, counts, overdueByStage, alertByStage } = funnel;
-    const stageColors = {
-        'Planning':    '#8B5CF6',
-        'Development': '#1A73E8',
-        'QA':          '#F9AB00',
-        'Release':     '#EF4444',
-        'Live':        '#1E8E3E',
-    };
+    const stageColors = typeof getFunnelStageColors === 'function'
+        ? getFunnelStageColors(ws)
+        : {
+            Planning: '#8B5CF6', Development: '#1A73E8', QA: '#F9AB00',
+            Release: '#EF4444', Live: '#1E8E3E',
+        };
     const maxCount = Math.max(...stages.map(s => counts[s] || 0), 1);
 
     const rows = stages.map(s => {
@@ -507,26 +549,36 @@ function renderStageFunnel() {
         const alertN   = alertByStage[s] || 0;
         const pct      = Math.round((count / maxCount) * 100);
         const color    = stageColors[s] || 'var(--accent-primary)';
+        const safeStage = String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
         return `
-        <div class="ov-funnel-row" onclick="App.analyticsDrill('stage','${s}')">
+        <div class="ov-funnel-row" onclick="App.analyticsDrill('stage','${safeStage}')">
             <div class="ov-funnel-label">${s}</div>
             <div class="ov-funnel-track">
                 <div class="ov-funnel-fill" style="width:0%;background:${color};" data-fill="${pct}"></div>
             </div>
             <div class="ov-funnel-right">
                 <span class="ov-funnel-count">${count}</span>
-                ${overdueN ? `<span class="ov-funnel-chip ov-funnel-chip--red">${overdueN}!</span>` : ''}
-                ${alertN ? `<span class="ov-funnel-chip ov-funnel-chip--amber">${alertN}⚠</span>` : ''}
+                ${overdueN ? `<span class="ov-funnel-chip ov-funnel-chip--red">${overdueN}</span>` : ''}
+                ${alertN ? `<span class="ov-funnel-chip ov-funnel-chip--amber">${alertN}</span>` : ''}
             </div>
         </div>`;
     }).join('');
 
+    const unitLabel = typeof deliveryUnitWord === 'function' ? deliveryUnitWord(true) : 'pages';
+    const isClickUp = typeof isClickUpWorkspace === 'function' && isClickUpWorkspace(ws);
+    const emptyHint = isClickUp
+        ? 'Tasks appear by ClickUp status. Add subtasks for deliverable-level funnel counts.'
+        : 'No linked delivery pages yet.';
+    const body = funnel.total
+        ? rows
+        : `<div class="ov-funnel-empty">${emptyHint}</div>`;
+
     return `
     <div class="ov-section-header">
         <h2 class="ov-section-title">Stage Funnel</h2>
-        <span class="ov-section-badge">${funnel.total || 0} ${typeof deliveryUnitWord === 'function' ? deliveryUnitWord(true) : 'pages'}</span>
+        <span class="ov-section-badge">${funnel.total || 0} ${unitLabel}</span>
     </div>
-    <div class="card-light ov-funnel-card">${rows}</div>`;
+    <div class="card-light ov-funnel-card${funnel.total ? '' : ' ov-funnel-card--empty'}">${body}</div>`;
 }
 
 function renderTeamStatusGrid() {
@@ -549,7 +601,7 @@ function renderTeamStatusGrid() {
         const rEntry  = resMap[o.name];
         const hasConflict = rEntry && rEntry.conflicts.length > 0;
         const ringColor   = hasConflict ? '#D93025' : o.delayed ? '#F9AB00' : '#1E8E3E';
-        const ringLabel   = hasConflict ? '⚡ conflict' : o.delayed ? `${o.delayed} delayed` : `${o.total} active`;
+        const ringLabel   = hasConflict ? 'Conflict' : o.delayed ? `${o.delayed} delayed` : `${o.total} active`;
 
         return `
         <div class="ov-person-chip" onclick="App.setFilterAndNavigate('owner','${escapeHtml(o.name)}','projects')"
@@ -655,7 +707,9 @@ function renderPipelineHealthCard() {
                 </div>
             </div>
             <div style="text-align:right;">
-                <div style="font-size:28px; font-weight:900; line-height:1;">${Math.round(onTrack / total * 100)}%</div>
+                ${/* Bug #3 fix: use non-Live pool as denominator (matches hero ring formula)
+                    when HEALTH_SCORE_UNIFIED is on; otherwise falls back to all.length. */ ''}
+                <div style="font-size:28px; font-weight:900; line-height:1;">${Math.round(onTrack / Math.max(featureOn('HEALTH_SCORE_UNIFIED') ? all.filter(p => p.stage !== 'Live').length : total, 1) * 100)}%</div>
                 <div style="font-size:11px; opacity:0.6; margin-top:2px;">on track</div>
             </div>
         </div>
@@ -1319,7 +1373,7 @@ function renderAlerts() {
 
     html += mapList(sortAlertsByAttention(overdue), 'overdue', 'Overdue', 'Past their release date and not yet live.', '#EF4444', overdueIcon, 'bg-red');
     const soonDays = CONFIG.UPCOMING_DAYS_THRESHOLD ?? 7;
-    html += mapList(sortAlertsByAttention(at_risk), 'at_risk', 'Likely to miss', 'At current progress rate, projected finish is after the target release date.', '#F59E0B', atRiskIcon, 'bg-yellow');
+    html += mapList(sortAlertsByAttention(at_risk), 'at_risk', 'Likely to miss', 'Projects flagged as likely to miss their target release date based on progress and timeline.', '#F59E0B', atRiskIcon, 'bg-yellow');
     html += mapList(sortAlertsByAttention(stalled), 'stalled', 'Stalled', `Under ${CONFIG.STALLED_PROGRESS_THRESHOLD ?? 30}% progress despite being started ${CONFIG.STALLED_DAYS_THRESHOLD ?? 30}+ days ago.`, '#3B82F6', stalledIcon, 'bg-blue');
     html += mapList(sortAlertsByAttention(upcoming), 'upcoming', `Releasing soon (next ${soonDays} days)`, 'On track but release date is approaching.', '#EC4899', upcomingIcon, 'bg-violet');
 
@@ -1492,7 +1546,7 @@ function renderAvailPopoverContent() {
         <div class="res-pop-row">
             <div class="res-pop-avatar" style="background:${avc}">${init}</div>
             <div class="res-pop-info">
-                <div class="res-pop-name">${escapeHtml(p.name)}${hasConflict ? ' <span class="res-pop-cfl">⚠</span>' : ''}</div>
+                <div class="res-pop-name">${escapeHtml(p.name)}${hasConflict ? ` <span class="res-pop-cfl ui-inline-icon" aria-label="Conflict">${Icons.alert}</span>` : ''}</div>
                 <div class="res-pop-bar-wrap"><div class="res-pop-bar" style="width:${barW}%"></div></div>
             </div>
             <span class="res-pop-chip ${avail.popClass}">${avail.label}</span>
@@ -1547,7 +1601,7 @@ function renderPeopleTable(people, today, WINDOW, statusColor, statusLabel, fmtD
                 <span class="res-tbl-pill-name">${escapeHtml(a.projectName)}</span>
                 <span class="res-tbl-pill-role">${escapeHtml(a.role)}</span>
                 ${daysStr ? `<span class="res-tbl-pill-days ${overdue ? 'res-tbl-pill-days--over' : ''}">${daysStr}</span>` : ''}
-                ${isConflict ? `<span class="res-tbl-pill-warn">⚠</span>` : ''}
+                ${isConflict ? `<span class="res-tbl-pill-warn ui-inline-icon" aria-label="Conflict">${Icons.alert}</span>` : ''}
             </div>`;
         }).join('');
 
@@ -1562,7 +1616,7 @@ function renderPeopleTable(people, today, WINDOW, statusColor, statusLabel, fmtD
                 <div class="res-tbl-avatar" style="background:${avc}">${init}</div>
                 <div class="res-tbl-name-wrap">
                     <div class="res-tbl-name">${escapeHtml(p.name)}</div>
-                    <div class="res-tbl-counts">${p.activeCount} active · ${completedCount} done${hasConflict ? ` · <span style="color:#D93025;font-weight:700;">⚠ ${p.conflicts.length} conflict</span>` : ''}</div>
+                    <div class="res-tbl-counts">${p.activeCount} active · ${completedCount} done${hasConflict ? ` · <span style="color:#D93025;font-weight:700;display:inline-flex;align-items:center;gap:4px;"><span class="ui-inline-icon">${Icons.alert}</span>${p.conflicts.length} conflict</span>` : ''}</div>
                 </div>
             </td>
             <!-- Load -->
@@ -1595,6 +1649,1782 @@ function renderPeopleTable(people, today, WINDOW, statusColor, statusLabel, fmtD
 }
 
 function renderResources() {
+    const trackerOn = typeof featureOn === 'function' && featureOn('RESOURCE_TRACKER');
+    const mode = trackerOn ? (AppState.resourcesViewMode || 'delivery') : 'delivery';
+    const switcher = trackerOn ? `
+    <div class="res-mode-switch" role="tablist" aria-label="Resources view mode">
+        <button type="button" role="tab" class="res-mode-btn ${mode === 'delivery' ? 'res-mode-btn--active' : ''}"
+            aria-selected="${mode === 'delivery'}" onclick="App.setResourcesViewMode('delivery')">
+            <span class="ui-inline-icon" aria-hidden="true">${Icons.list}</span>
+            Delivery view
+        </button>
+        <button type="button" role="tab" class="res-mode-btn ${mode === 'manager' ? 'res-mode-btn--active' : ''}"
+            aria-selected="${mode === 'manager'}" onclick="App.setResourcesViewMode('manager')">
+            <span class="ui-inline-icon" aria-hidden="true">${Icons.users}</span>
+            Manager view
+        </button>
+    </div>` : '';
+
+    const body = mode === 'manager'
+        ? renderResourcesManagerView()
+        : renderResourcesDelivery();
+
+    return `
+    <div class="res-page ${mode === 'manager' ? 'res-page--manager' : ''}">
+        ${switcher}
+        ${body}
+    </div>`;
+}
+
+function getManagerRoster() {
+    return typeof enrichResourceRoster === 'function'
+        ? enrichResourceRoster(AppState.resourceRoster || [], AppState.resourceMap)
+        : (AppState.resourceRoster || []);
+}
+
+function renderResourcesManagerView() {
+    const status = AppState.resourceRosterStatus || 'idle';
+    const meta = AppState.resourceRosterMeta || {};
+    const tab = AppState.resourcesManagerTab || 'dashboard';
+    const roster = getManagerRoster();
+    const apiOnline = AppState.resourceApiStatus === 'online';
+    const apiEmps = AppState.resourceApiEmployees || [];
+    const summary = apiOnline && (AppState.resourceApiMeta?.dashboard)
+        ? {
+            total: AppState.resourceApiMeta.dashboard.total_employees,
+            allocated: AppState.resourceApiMeta.dashboard.allocated,
+            bench: AppState.resourceApiMeta.dashboard.bench,
+            partial: AppState.resourceApiMeta.dashboard.partially_allocated,
+            conflicts: roster.filter(e => e.conflicts?.length).length,
+            freeing30: AppState.resourceApiMeta.dashboard.freeing_30d,
+            avgUtil: AppState.resourceApiMeta.dashboard.avg_utilization_pct,
+            byDepartment: (typeof computeResourceRosterSummary === 'function'
+                ? computeResourceRosterSummary(roster) : {}).byDepartment || {},
+            overAllocated: AppState.resourceApiMeta.dashboard.over_allocated,
+            fromApi: true,
+        }
+        : (typeof computeResourceRosterSummary === 'function'
+            ? computeResourceRosterSummary(roster)
+            : { total: roster.length, allocated: 0, bench: 0, partial: 0, conflicts: 0, freeing30: 0, avgUtil: 0, byDepartment: {} });
+
+    if (status === 'loading' && !roster.length && !apiEmps.length) {
+        return `
+        <div class="rm-manager">
+            <div class="rm-manager-head">
+                <h2 class="rm-manager-title">Resource management</h2>
+                <p class="rm-manager-sub">Loading company roster…</p>
+            </div>
+            <div class="rm-empty">Loading roster…</div>
+        </div>`;
+    }
+
+    if (meta.error && !roster.length && !apiEmps.length) {
+        return `
+        <div class="rm-manager">
+            <div class="rm-manager-head">
+                <h2 class="rm-manager-title">Resource management</h2>
+                <p class="rm-manager-sub">Company roster from the Resource-management sibling sheet.</p>
+            </div>
+            <div class="rm-empty rm-empty--error">${escapeHtml(meta.error)}</div>
+            <button type="button" class="btn btn-secondary" onclick="App.reloadResourceRoster()">Retry</button>
+        </div>`;
+    }
+
+    const tabs = [
+        { id: 'dashboard', label: 'Dashboard' },
+        { id: 'employees', label: 'Employees' },
+        { id: 'projects', label: 'Projects' },
+        { id: 'allocations', label: 'Allocations' },
+        { id: 'bench', label: 'Available' },
+        { id: 'reports', label: 'Reports' },
+    ];
+    const tabBar = tabs.map(t => `
+        <button type="button" class="rm-tab ${tab === t.id ? 'rm-tab--active' : ''}"
+            onclick="App.setResourcesManagerTab('${t.id}')">${t.label}</button>
+    `).join('');
+
+    let panel = '';
+    if (tab === 'employees') panel = renderRmEmployeesTab(roster, apiEmps, apiOnline);
+    else if (tab === 'projects') panel = renderRmProjectsTab(apiOnline);
+    else if (tab === 'allocations') panel = renderRmAllocationsTab(roster, apiOnline);
+    else if (tab === 'bench') panel = renderRmBenchTab(roster, apiOnline);
+    else if (tab === 'reports') panel = renderRmReportsTab(roster, summary, apiOnline);
+    else panel = renderRmDashboardTab(roster, summary, apiOnline);
+
+    const src = meta.source ? escapeHtml(meta.source) : 'Resource-management';
+    const count = summary.total;
+    const apiStatus = AppState.resourceApiStatus || 'idle';
+    const apiMeta = AppState.resourceApiMeta || {};
+    const canManage = typeof App !== 'undefined' && App.canManageResources && App.canManageResources();
+    const brief = getRmCapacityBrief(summary);
+
+    let statusDot = 'rm-status-dot--idle';
+    let statusLabel = 'Connecting…';
+    if (apiStatus === 'online') {
+        statusDot = 'rm-status-dot--on';
+        statusLabel = 'Live staffing data';
+    } else if (apiStatus === 'offline') {
+        statusDot = 'rm-status-dot--off';
+        statusLabel = 'Offline — sheet roster only';
+    }
+
+    const adminMenu = `
+        <details class="rm-admin-menu">
+            <summary class="rm-admin-menu-btn" title="Admin tools">Admin</summary>
+            <div class="rm-admin-menu-panel">
+                <div class="rm-admin-menu-meta">
+                    <span class="rm-status-dot ${statusDot}"></span>
+                    ${escapeHtml(statusLabel)}
+                    ${apiStatus === 'online' && apiMeta.dashboard?.total_employees != null
+                        ? ` · ${apiMeta.dashboard.total_employees} in roster`
+                        : ''}
+                </div>
+                <button type="button" class="rm-admin-menu-item" onclick="App.syncResourceApi({ silent: false })">Sync staffing data</button>
+                ${apiOnline ? `<button type="button" class="rm-admin-menu-item" onclick="App.runResourceDailyJobs()">Run daily jobs</button>` : ''}
+                <button type="button" class="rm-admin-menu-item" onclick="App.reloadResourceRoster()">Refresh roster sheet</button>
+                ${apiStatus === 'offline' && apiMeta.hint
+                    ? `<p class="rm-admin-menu-hint">${escapeHtml(apiMeta.hint)}</p>`
+                    : ''}
+                <p class="rm-admin-menu-hint">Source: ${src}</p>
+            </div>
+        </details>`;
+
+    const primaryActions = canManage && apiOnline ? `
+        <button type="button" class="rm-btn-secondary" onclick="App.openProjectPaneCreate()">+ Project</button>
+        <button type="button" class="rm-btn-primary" onclick="App.openAllocModal()">+ Allocate</button>
+    ` : '';
+
+    const drawer = renderRmEmployeeDrawer(apiEmps, apiOnline);
+
+    return `
+    <div class="rm-manager">
+        <div class="rm-manager-head">
+            <div class="rm-manager-head-copy">
+                <h2 class="rm-manager-title">Resource management</h2>
+                <p class="rm-manager-sub rm-manager-sub--brief rm-manager-sub--${brief.tone}">${escapeHtml(brief.text)}</p>
+                <p class="rm-manager-meta">
+                    <span class="rm-status-dot ${statusDot}"></span>
+                    ${count} people · ${escapeHtml(statusLabel)}
+                </p>
+            </div>
+            <div class="rm-manager-actions">
+                ${primaryActions}
+                ${adminMenu}
+            </div>
+        </div>
+        <div class="rm-tabs">${tabBar}</div>
+        <div class="rm-panel">${panel}</div>
+        ${drawer}
+    </div>`;
+}
+
+/** Merge Resource API catalog + main Project tab (sibling sheet) for Manager Projects UI. */
+function getRmMergedProjects() {
+    const byExt = new Map();
+    (AppState.resourceApiProjects || []).forEach(p => {
+        const ext = String(p.external_id || '').trim();
+        if (!ext) return;
+        byExt.set(ext, {
+            ...p,
+            catalogId: p.id,
+            external_id: ext,
+            activity_type: p.activity_type || 'project',
+        });
+    });
+    (AppState.allProjects || []).forEach(p => {
+        const ext = String(p.id || '').trim();
+        if (!ext) return;
+        const cur = byExt.get(ext);
+        if (cur) {
+            cur.name = p.name || cur.name;
+            cur.client = p.client || cur.client;
+            cur.stage = p.stage || cur.stage;
+            cur.status = p.status || cur.status;
+            cur.priority = p.priority || cur.priority;
+            cur.release_date = p.release_date || p.releaseDate || cur.release_date;
+            if (cur.source !== 'manual') cur.source = 'synced';
+        } else {
+            byExt.set(ext, {
+                catalogId: null,
+                id: null,
+                external_id: ext,
+                workspace_id: AppState.activeWorkspaceId || 'default',
+                name: p.name || ext,
+                client: p.client || '',
+                stage: p.stage || '',
+                status: p.status || '',
+                priority: p.priority || '',
+                release_date: p.release_date || p.releaseDate || '',
+                activity_type: 'project',
+                source: 'sheet',
+                synced_at: null,
+            });
+        }
+    });
+    return [...byExt.values()].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+}
+
+function findRmMergedProject(selectedId, externalId) {
+    const merged = getRmMergedProjects();
+    if (selectedId) {
+        const hit = merged.find(p => p.catalogId === selectedId || p.id === selectedId);
+        if (hit) return hit;
+    }
+    const ext = externalId || AppState.resourceSelectedProjectExternalId;
+    if (ext) return merged.find(p => p.external_id === ext) || null;
+    return null;
+}
+
+/** Merge Atlas delivery projects + Resource API catalog for allocate dropdowns. */
+function getRmAllocatableProjects() {
+    const byId = new Map();
+    (AppState.resourceApiProjects || []).forEach(p => {
+        const id = p.external_id || p.id;
+        if (!id) return;
+        byId.set(String(id), {
+            id: String(id),
+            name: p.name || id,
+            stage: p.stage || '',
+            client: p.client || '',
+            source: p.source || 'catalog',
+            release_date: p.release_date || '',
+            status: p.status || '',
+            priority: p.priority || '',
+            catalogId: p.id,
+        });
+    });
+    (AppState.allProjects || []).forEach(p => {
+        const id = String(p.id || '');
+        if (!id) return;
+        if (!byId.has(id)) {
+            byId.set(id, {
+                id,
+                name: p.name || id,
+                stage: p.stage || '',
+                client: p.client || '',
+                source: 'atlas',
+                release_date: p.release_date || '',
+                status: p.status || '',
+                priority: p.priority || '',
+            });
+        } else {
+            const cur = byId.get(id);
+            if (!cur.name && p.name) cur.name = p.name;
+        }
+    });
+    const done = new Set(['live', 'completed', 'done', 'closed']);
+    return [...byId.values()]
+        .filter(p => !done.has(String(p.stage || '').toLowerCase()))
+        .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+}
+
+function formatRmStatusLabel(emp) {
+    const d = String(emp?.designation || '').toLowerCase();
+    if (/admin|director|head|lead|manager|vp|chief|principal/.test(d)) return 'Admin';
+    const avail = String(emp?.availability_status || '').toLowerCase();
+    if (/leadership|non.?project|excluded/.test(avail)) return 'Leadership';
+    if (/bench|available|guest/.test(avail)) return 'Guest';
+    return 'Member';
+}
+
+function isRmProjectStaffable(emp) {
+    if (!emp) return false;
+    if (emp.project_staffable === false) return false;
+    const name = (typeof normalizePersonKey === 'function'
+        ? normalizePersonKey(emp.full_name || emp.name)
+        : String(emp.full_name || emp.name || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim());
+    const configured = (typeof CONFIG !== 'undefined' && CONFIG.RESOURCE_API && CONFIG.RESOURCE_API.NON_PROJECT_STAFF_NAMES) || [];
+    const excluded = new Set(configured.map(n =>
+        (typeof normalizePersonKey === 'function' ? normalizePersonKey(n) : String(n).toLowerCase().trim())
+    ).filter(Boolean));
+    if (excluded.has(name)) return false;
+    if (name.startsWith('madhulal') || name.startsWith('sharmiq') || name.startsWith('sharmiw')) return false;
+    if (/\bdirector\b/i.test(String(emp.designation || ''))) return false;
+    return true;
+}
+
+function formatRmJoinedLabel(emp) {
+    if (emp?.created_at) {
+        const d = new Date(emp.created_at);
+        if (!Number.isNaN(d.getTime())) {
+            return d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+        }
+    }
+    if (emp?.years_at_company != null) return `${emp.years_at_company}y tenure`;
+    return '—';
+}
+
+function getRmStatusDotClass(emp) {
+    const avail = String(emp?.availability_status || '').toLowerCase();
+    if (/bench|available/.test(avail)) return 'rm-user-dot--away';
+    if (/partial/.test(avail)) return 'rm-user-dot--partial';
+    return 'rm-user-dot--active';
+}
+
+function getRmEmployeeTeamsLabel(employeeId, allocs, projectMap) {
+    const mine = (allocs || []).filter(a =>
+        a.employee_id === employeeId && String(a.status || 'Active').toLowerCase() !== 'released');
+    if (!mine.length) return '—';
+    const names = mine.map(a => {
+        const p = projectMap[a.project_external_id];
+        const n = p?.name || a.project_external_id || '';
+        return String(n).split(/[\s/\-]+/)[0].slice(0, 8).toUpperCase();
+    }).filter(Boolean);
+    if (!names.length) return '—';
+    if (names.length <= 2) return names.join(', ');
+    return `${names.slice(0, 2).join(', ')} + ${names.length - 2}`;
+}
+
+function renderRmUserCell(emp) {
+    const name = emp?.full_name || '—';
+    const sub = emp?.email || emp.employee_code || emp.department || '—';
+    return `
+    <div class="rm-user-cell">
+        <div class="rm-user-avatar-wrap">
+            <div class="rm-avatar rm-avatar--user" style="background:${stringToColor(name)}">${getInitials(name)}</div>
+            <span class="rm-user-dot ${getRmStatusDotClass(emp)}" aria-hidden="true"></span>
+        </div>
+        <div class="rm-user-text">
+            <div class="rm-user-name">${escapeHtml(name)}</div>
+            <div class="rm-user-email">${escapeHtml(sub)}</div>
+        </div>
+    </div>`;
+}
+
+function formatRmAvailStatus(emp, alreadyOnProject) {
+    if (alreadyOnProject) return { label: 'On Project', cls: 'rm-assign-status--busy' };
+    if (!isRmProjectStaffable(emp)) return { label: 'Leadership', cls: 'rm-assign-status--busy' };
+    const avail = String(emp?.availability_status || '').toLowerCase();
+    if (/leadership/.test(avail)) return { label: 'Leadership', cls: 'rm-assign-status--busy' };
+    if (/bench|available/.test(avail)) return { label: 'Available', cls: 'rm-assign-status--ok' };
+    if (/full|allocated/.test(avail)) return { label: 'On Project', cls: 'rm-assign-status--busy' };
+    return { label: 'Available', cls: 'rm-assign-status--ok' };
+}
+
+function getRmProjectFte(externalId, allocs) {
+    return (allocs || [])
+        .filter(a => a.project_external_id === externalId && String(a.status || '').toLowerCase() !== 'released')
+        .reduce((s, a) => s + (Number(a.allocation_pct) || 0), 0);
+}
+
+function getRmProjectsKpis(projects, allocs) {
+    const dash = AppState.resourceApiMeta?.dashboard || {};
+    const emps = AppState.resourceApiEmployees || [];
+    return {
+        totalPeople: dash.total_employees ?? emps.length,
+        activeProjects: projects.length,
+        totalFte: Math.round(allocs.reduce((s, a) => s + (Number(a.allocation_pct) || 0), 0) / 10) / 10,
+        utilization: dash.avg_utilization_pct ?? 0,
+        openRoles: dash.bench ?? emps.filter(e => isRmProjectStaffable(e) && /bench|available/i.test(e.availability_status || '')).length,
+    };
+}
+
+function formatRmProjectStageBadge(p) {
+    const raw = String(p.stage || p.status || 'Active').replace(/_/g, ' ');
+    const lower = raw.toLowerCase();
+    let cls = 'rm-proj-badge--progress';
+    if (/plan|draft|new/.test(lower)) cls = 'rm-proj-badge--plan';
+    if (/complete|done|live|closed|archived/.test(lower)) cls = 'rm-proj-badge--done';
+    return `<span class="rm-proj-badge ${cls}">${escapeHtml(raw)}</span>`;
+}
+
+function renderRmProjectIcon(name) {
+    return `<span class="rm-proj-icon" style="background:${stringToColor(name || 'P')}">${getInitials(name || 'P')}</span>`;
+}
+
+function renderRmFteCell(pctSum, peopleCount) {
+    const sum = Number(pctSum) || 0;
+    const fte = Math.round((sum / 100) * 10) / 10;
+    const people = peopleCount != null
+        ? peopleCount
+        : (sum > 0 ? Math.max(1, Math.round(sum / 100)) : 0);
+    if (!people && fte <= 0) {
+        return `<div class="rm-fte-cell"><span class="rm-fte-pct rm-fte-pct--empty">—</span></div>`;
+    }
+    return `<div class="rm-fte-cell">
+        <span class="rm-fte-pct">${fte} FTE</span>
+        <span class="rm-fte-sub">${people} ${people === 1 ? 'person' : 'people'}</span>
+    </div>`;
+}
+
+/** @deprecated use renderRmFteCell — kept as thin wrapper for any leftover callers */
+function renderRmFteBar(pct, peopleCount) {
+    return renderRmFteCell(pct, peopleCount);
+}
+
+function getRmCapacityBrief(summary) {
+    const util = Number(summary.avgUtil) || 0;
+    const over = Number(summary.overAllocated != null ? summary.overAllocated : summary.conflicts) || 0;
+    const bench = Number(summary.bench) || 0;
+    const allocated = Number(summary.allocated) || 0;
+    if (over > 0) {
+        return {
+            tone: 'risk',
+            text: `${over} ${over === 1 ? 'person is' : 'people are'} overbooked — review allocations before taking on new work.`,
+        };
+    }
+    if (bench === 0 && util >= 90) {
+        return {
+            tone: 'tight',
+            text: `Capacity is tight — ${util}% average utilization and no one available right now.`,
+        };
+    }
+    if (bench >= 5) {
+        return {
+            tone: 'ok',
+            text: `Capacity looks healthy — ${bench} available for new work, ${allocated} on delivery.`,
+        };
+    }
+    return {
+        tone: 'ok',
+        text: `${allocated} on delivery · ${bench} available · ${util}% average utilization.`,
+    };
+}
+
+function renderRmAvatarStack(ids, empMap, max = 4) {
+    const list = (ids || []).filter(Boolean);
+    if (!list.length) return `<span class="rm-av-stack-empty">—</span>`;
+    const shown = list.slice(0, max);
+    const extra = list.length - shown.length;
+    const avatars = shown.map(id => {
+        const e = empMap[id];
+        const name = e?.full_name || id;
+        return `<span class="rm-av-stack-item" style="background:${stringToColor(name)}" title="${escapeHtml(name)}">${getInitials(name)}</span>`;
+    }).join('');
+    const more = extra > 0 ? `<span class="rm-av-stack-more">+${extra}</span>` : '';
+    return `<div class="rm-av-stack">${avatars}${more}</div>`;
+}
+
+function daysUntilRelease(dateStr) {
+    if (!dateStr) return null;
+    const d = new Date(dateStr);
+    if (Number.isNaN(d.getTime())) return null;
+    return Math.ceil((d - new Date()) / 86400000);
+}
+
+function getRmActivityType(p) {
+    const raw = String(p?.activity_type || 'project').toLowerCase().trim();
+    if (raw === 'operational' || raw === 'operation' || raw === 'ops' || raw === 'non_project' || raw === 'non-project' || raw === 'internal') {
+        return 'operational';
+    }
+    return 'project';
+}
+
+function isRmDeliveryProject(p) {
+    return getRmActivityType(p) === 'project';
+}
+
+function formatRmActivityBadge(p) {
+    if (getRmActivityType(p) === 'operational') {
+        return `<span class="rm-proj-type-badge rm-proj-type-badge--ops">Operational</span>`;
+    }
+    return `<span class="rm-proj-active-badge rm-proj-active-badge--sm">Active project</span>`;
+}
+
+function filterRmProjectsByView(projects, view) {
+    const done = new Set(['live', 'completed', 'done', 'closed', 'archived']);
+    const v = view === 'all' ? 'active' : (view || 'active');
+    let list = [...projects];
+    if (v === 'archived') {
+        list = list.filter(p =>
+            done.has(String(p.stage || '').toLowerCase())
+            || done.has(String(p.status || '').toLowerCase()));
+    } else if (v === 'operational') {
+        list = list.filter(p => getRmActivityType(p) === 'operational'
+            && !done.has(String(p.stage || '').toLowerCase())
+            && !done.has(String(p.status || '').toLowerCase()));
+    } else if (v === 'recent') {
+        list = list.filter(p => isRmDeliveryProject(p));
+        list.sort((a, b) =>
+            String(b.synced_at || b.release_date || '').localeCompare(String(a.synced_at || a.release_date || '')));
+        list = list.slice(0, 30);
+        return list;
+    } else {
+        // active (default): delivery projects only, not archived
+        list = list.filter(p => isRmDeliveryProject(p)
+            && !done.has(String(p.stage || '').toLowerCase())
+            && !done.has(String(p.status || '').toLowerCase()));
+    }
+    return list.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+}
+
+function renderRmAssignPickTable(employees, options) {
+    const {
+        selected = new Set(),
+        alreadyOn = new Set(),
+        emptyMessage = 'No employees loaded.',
+        draftPct = 100,
+    } = options || {};
+
+    if (!employees.length) {
+        return `<div class="rm-empty rm-empty--inline">${escapeHtml(emptyMessage)}</div>`;
+    }
+
+    const rows = employees.map(e => {
+        const empId = String(e.id);
+        const on = selected.has(empId);
+        const already = alreadyOn.has(empId) || alreadyOn.has(e.id);
+        const status = formatRmAvailStatus(e, already);
+        const role = e.designation || e.role_family || 'Developer';
+        return `
+        <tr class="rm-assign-row ${on ? 'rm-assign-row--on' : ''} ${already ? 'rm-assign-row--already' : ''}"
+            data-id="${escapeHtml(empId)}"
+            onclick="App.toggleAllocEmployeeRow('${escapeHtml(empId)}', event)">
+            <td class="rm-assign-check" onclick="event.stopPropagation()">
+                <input type="checkbox" name="employee_ids" value="${escapeHtml(empId)}"
+                    ${on ? 'checked' : ''}
+                    aria-label="Select ${escapeHtml(e.full_name)}"
+                    onclick="event.stopPropagation()"
+                    onchange="App.toggleAllocEmployee('${escapeHtml(empId)}', this.checked)" />
+            </td>
+            <td>${renderRmUserCell(e)}</td>
+            <td class="rm-assign-muted">${escapeHtml(role)}</td>
+            <td><span class="rm-assign-status ${status.cls}">${escapeHtml(status.label)}</span></td>
+            <td class="rm-assign-action" onclick="event.stopPropagation()">
+                <button type="button" class="rm-link" onclick="App.selectResourceEmployee('${escapeHtml(empId)}')">View</button>
+            </td>
+        </tr>`;
+    }).join('');
+
+    const allSelected = employees.length > 0 && employees.every(e => selected.has(String(e.id)));
+    const someSelected = employees.some(e => selected.has(String(e.id)));
+
+    return `
+    <div class="rm-assign-table-wrap">
+        <table class="rm-assign-table">
+            <thead>
+                <tr>
+                    <th class="rm-assign-check">
+                        <input type="checkbox" title="Select all visible"
+                            aria-label="Select all visible people"
+                            ${allSelected ? 'checked' : ''}
+                            ${someSelected && !allSelected ? 'data-indeterminate="1"' : ''}
+                            onchange="App.selectVisibleAllocPeople(this.checked)" />
+                    </th>
+                    <th>People</th>
+                    <th>Role</th>
+                    <th>Status</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+        </table>
+    </div>`;
+}
+
+function renderRmProjectsKpiRow(kpis) {
+    const cards = [
+        { icon: Icons.users, val: kpis.totalPeople, label: 'Total People', sub: 'Active resources' },
+        { icon: Icons.briefcase, val: kpis.activeProjects, label: 'Active Projects', sub: 'Across all clients' },
+        { icon: Icons.chart, val: kpis.totalFte, label: 'Total FTE', sub: 'People-capacity assigned' },
+        { icon: Icons.trendUp, val: `${kpis.utilization}%`, label: 'Utilization', sub: 'Company wide' },
+        { icon: Icons.zap, val: kpis.openRoles, label: 'Open Roles', sub: 'Needs allocation' },
+    ];
+    return `<div class="rm-proj-kpi-row">${cards.map(c => `
+        <div class="rm-proj-kpi card-light">
+            <div class="rm-proj-kpi-icon ui-inline-icon">${c.icon}</div>
+            <div class="rm-proj-kpi-body">
+                <div class="rm-proj-kpi-val">${c.val}</div>
+                <div class="rm-proj-kpi-label">${c.label}</div>
+                <div class="rm-proj-kpi-sub">${c.sub}</div>
+            </div>
+        </div>`).join('')}
+    </div>`;
+}
+
+function renderRmProjectsInsights(projects, allocs, kpis) {
+    const dash = AppState.resourceApiMeta?.dashboard || {};
+    const total = Math.max(1, dash.total_employees || kpis.totalPeople || 1);
+    const billable = Math.round(((dash.allocated || 0) / total) * 100);
+    const bench = Math.round(((dash.bench || 0) / total) * 100);
+    const partial = Math.max(0, 100 - billable - bench);
+
+    const upcoming = [...projects]
+        .filter(p => p.release_date)
+        .sort((a, b) => String(a.release_date).localeCompare(String(b.release_date)))
+        .slice(0, 5);
+
+    const upcomingRows = upcoming.length ? upcoming.map(p => {
+        const days = daysUntilRelease(p.release_date);
+        let badgeCls = 'rm-release-badge--far';
+        if (days != null && days <= 7) badgeCls = 'rm-release-badge--urgent';
+        else if (days != null && days <= 30) badgeCls = 'rm-release-badge--soon';
+        const badge = days != null ? `${days} days` : '—';
+        return `<div class="rm-release-row">
+            <div>
+                <div class="rm-release-name">${escapeHtml(p.name)}</div>
+                <div class="rm-release-date">${escapeHtml(p.release_date)}</div>
+            </div>
+            <span class="rm-release-badge ${badgeCls}">${badge}</span>
+        </div>`;
+    }).join('') : `<div class="rm-empty rm-empty--inline">No upcoming releases</div>`;
+
+    const insights = [];
+    const due30 = upcoming.filter(p => {
+        const d = daysUntilRelease(p.release_date);
+        return d != null && d >= 0 && d <= 30;
+    }).length;
+    if (due30) insights.push({ icon: Icons.calendar, text: `${due30} project${due30 > 1 ? 's are' : ' is'} due in the next 30 days` });
+    if (dash.over_allocated) insights.push({ icon: Icons.alert, text: `${dash.over_allocated} people are over-allocated` });
+    if (dash.freeing_30d) insights.push({ icon: Icons.users, text: `${dash.freeing_30d} people freeing up in 30 days` });
+    if (!insights.length) insights.push({ icon: Icons.checkCircle, text: 'Staffing looks healthy — no urgent alerts' });
+
+    const insightRows = insights.map(i => `
+        <div class="rm-insight-row">
+            <span class="rm-insight-icon ui-inline-icon">${i.icon}</span>
+            <span>${escapeHtml(i.text)}</span>
+        </div>`).join('');
+
+    return `
+    <div class="rm-proj-insights">
+        <div class="rm-proj-insight card-light">
+            <h4 class="rm-proj-insight-title">Resource Utilization</h4>
+            <div class="rm-donut-wrap">
+                <div class="rm-donut" style="background:conic-gradient(var(--accent-primary) 0 ${billable}%, #94a3b8 ${billable}% ${billable + partial}%, #e2e8f0 ${billable + partial}% 100%)">
+                    <div class="rm-donut-hole">
+                        <strong>${kpis.utilization}%</strong>
+                        <span>Utilized</span>
+                    </div>
+                </div>
+                <div class="rm-donut-legend">
+                    <div><span class="rm-legend-dot rm-legend-dot--bill"></span> Billable ${billable}%</div>
+                    <div><span class="rm-legend-dot rm-legend-dot--partial"></span> Partial ${partial}%</div>
+                    <div><span class="rm-legend-dot rm-legend-dot--bench"></span> Bench ${bench}%</div>
+                </div>
+            </div>
+        </div>
+        <div class="rm-proj-insight card-light">
+            <h4 class="rm-proj-insight-title">Upcoming Releases</h4>
+            <div class="rm-release-list">${upcomingRows}</div>
+        </div>
+        <div class="rm-proj-insight card-light">
+            <h4 class="rm-proj-insight-title">Quick Insights</h4>
+            <div class="rm-insight-list">${insightRows}</div>
+        </div>
+    </div>`;
+}
+
+function renderRmUserPickTable(employees, options) {
+    const {
+        selected = new Set(),
+        alreadyOn = new Set(),
+        allocs = [],
+        projectMap = {},
+        emptyMessage = 'No employees loaded.',
+    } = options || {};
+
+    if (!employees.length) {
+        return `<div class="rm-empty rm-empty--inline">${escapeHtml(emptyMessage)}</div>`;
+    }
+
+    const rows = employees.map(e => {
+        const on = selected.has(e.id);
+        const already = alreadyOn.has(e.id);
+        const teams = getRmEmployeeTeamsLabel(e.id, allocs, projectMap);
+        return `
+        <tr class="rm-user-pick-row ${on ? 'rm-user-pick-row--on' : ''} ${already ? 'rm-user-pick-row--already' : ''}"
+            data-id="${escapeHtml(e.id)}"
+            onclick="App.toggleAllocEmployeeRow('${escapeHtml(e.id)}', event)">
+            <td class="rm-user-pick-check" onclick="event.stopPropagation()">
+                <input type="checkbox" name="employee_ids" value="${escapeHtml(e.id)}"
+                    ${on ? 'checked' : ''}
+                    aria-label="Select ${escapeHtml(e.full_name)}"
+                    onchange="App.toggleAllocEmployee('${escapeHtml(e.id)}', this.checked)" />
+            </td>
+            <td class="rm-user-pick-name">${renderRmUserCell(e)}</td>
+            <td class="rm-user-pick-muted">${escapeHtml(formatRmStatusLabel(e))}</td>
+            <td class="rm-user-pick-muted">${escapeHtml(formatRmJoinedLabel(e))}</td>
+            <td class="rm-user-pick-muted rm-user-pick-teams">${escapeHtml(teams)}</td>
+        </tr>`;
+    }).join('');
+
+    return `
+    <div class="rm-user-pick-wrap">
+        <table class="rm-user-pick-table">
+            <thead>
+                <tr>
+                    <th class="rm-user-pick-check" aria-label="Select"></th>
+                    <th>Name</th>
+                    <th>Status</th>
+                    <th>Joined</th>
+                    <th>Teams</th>
+                </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+        </table>
+    </div>`;
+}
+
+function renderRmProjectPane(apiOnline) {
+    if (!apiOnline) return '';
+    const mode = AppState.resourceProjectPaneMode || 'empty';
+    const selectedId = AppState.resourceSelectedProjectId;
+
+    if (mode === 'create' || mode === 'edit') {
+        const f = AppState.resourceProjectForm || {};
+        const isEdit = mode === 'edit';
+        return `
+        <div class="rm-proj-detail card-light">
+            <div class="rm-proj-detail-head">
+                <h3 class="rm-proj-detail-title">${isEdit ? 'Edit project' : 'New project'}</h3>
+            </div>
+            <form class="rm-form rm-proj-detail-body" onsubmit="event.preventDefault();App.submitProjectModal(this)">
+                <label>Name
+                    <input name="name" type="text" required placeholder="Project or activity name" value="${escapeHtml(f.name || '')}" />
+                </label>
+                <label>Type
+                    <select name="activity_type">
+                        <option value="project" ${(f.activityType || 'project') === 'project' ? 'selected' : ''}>Active project</option>
+                        <option value="operational" ${(f.activityType || '') === 'operational' ? 'selected' : ''}>Operational activity (HR, Marketing, internal)</option>
+                    </select>
+                </label>
+                <label>Client
+                    <input name="client" type="text" placeholder="Optional" value="${escapeHtml(f.client || '')}" />
+                </label>
+                <label>Target release
+                    <input name="release_date" type="date" value="${escapeHtml(f.releaseDate || '')}" />
+                </label>
+                ${isEdit ? '' : `<label class="rm-check"><input type="checkbox" name="allocate_after" checked /> Open detail after saving</label>`}
+                <p class="rm-hint">${isEdit
+                    ? 'Operational activities stay off the Active Projects list and project planning views.'
+                    : 'Use Operational for ongoing functions like HR or Marketing — not delivery projects.'}</p>
+                <div class="rm-proj-detail-foot">
+                    ${isEdit && f.id ? `<button type="button" class="rm-proj-btn-danger" onclick='App.deleteResourceProject(${JSON.stringify(f.id)}, ${JSON.stringify(f.name || '')})'>Delete</button>` : ''}
+                    <button type="button" class="btn btn-secondary" onclick="App.cancelProjectPane()">Cancel</button>
+                    <button type="button" class="rm-proj-btn-primary" onclick="this.closest('.rm-proj-detail').querySelector('form').requestSubmit()">${isEdit ? 'Save changes' : 'Add'}</button>
+                </div>
+            </form>
+        </div>`;
+    }
+
+    if (mode === 'detail' && (selectedId || AppState.resourceSelectedProjectExternalId)) {
+        const p = findRmMergedProject(selectedId, AppState.resourceSelectedProjectExternalId)
+            || (AppState.resourceApiProjects || []).find(x => x.id === selectedId);
+        if (!p) {
+            return `<div class="rm-proj-detail card-light"><div class="rm-pane-empty">Project not found.</div></div>`;
+        }
+        const extId = p.external_id || p.id;
+        const allocs = (AppState.resourceApiAllocations || []).filter(a => a.project_external_id === extId);
+        const projectFte = getRmProjectFte(extId, allocs);
+        const daysLeft = daysUntilRelease(p.release_date);
+
+        const draft = AppState.resourceAllocDraft || {
+            selectedEmployeeIds: [],
+            allocationPct: 100,
+            projectRole: '',
+            startDate: new Date().toISOString().slice(0, 10),
+            endDate: '',
+            strict: false,
+        };
+        const selected = new Set((draft.selectedEmployeeIds || []).map(String));
+        const peopleQ = String(AppState.resourceAllocPeopleFilter || '').trim().toLowerCase();
+        const roleQ = String(AppState.resourceAllocRoleFilter || '').trim().toLowerCase();
+        let employees = [...(AppState.resourceApiEmployees || [])].filter(isRmProjectStaffable);
+        if (peopleQ) {
+            employees = employees.filter(e =>
+                String(e.full_name || '').toLowerCase().includes(peopleQ)
+                || String(e.email || '').toLowerCase().includes(peopleQ)
+                || String(e.department || '').toLowerCase().includes(peopleQ)
+                || String(e.designation || '').toLowerCase().includes(peopleQ));
+        }
+        if (roleQ) {
+            employees = employees.filter(e =>
+                String(e.designation || e.role_family || '').toLowerCase().includes(roleQ));
+        }
+        employees.sort((a, b) => (a.full_name || '').localeCompare(b.full_name || ''));
+        const alreadyOnProject = new Set(allocs.map(a => String(a.employee_id)));
+        const roles = [...new Set((AppState.resourceApiEmployees || []).map(e => e.designation || e.role_family).filter(Boolean))].sort();
+        const roleOpts = `<option value="">All Roles</option>${roles.map(r =>
+            `<option value="${escapeHtml(r)}" ${roleQ === String(r).toLowerCase() ? 'selected' : ''}>${escapeHtml(r)}</option>`
+        ).join('')}`;
+        const assignTable = renderRmAssignPickTable(employees, {
+            selected,
+            alreadyOn: alreadyOnProject,
+            emptyMessage: peopleQ || roleQ ? 'No people match.' : 'Sync API to load employees.',
+            draftPct: draft.allocationPct || 100,
+        });
+        const totalSelectedFte = selected.size * (Number(draft.allocationPct) || 100);
+        const selectedChips = [...selected].map(id => {
+            const e = (AppState.resourceApiEmployees || []).find(x => String(x.id) === id);
+            const name = e?.full_name || id;
+            return `<span class="rm-alloc-chip">
+                <span class="rm-avatar rm-avatar--sm" style="background:${stringToColor(name)}">${getInitials(name)}</span>
+                ${escapeHtml(name)}
+                <button type="button" class="rm-alloc-chip-x" aria-label="Remove ${escapeHtml(name)}"
+                    onclick="event.preventDefault();App.toggleAllocEmployee('${escapeHtml(id)}', false)">×</button>
+            </span>`;
+        }).join('');
+
+        const empMap = Object.fromEntries((AppState.resourceApiEmployees || []).map(e => [e.id, e]));
+        const activeAllocs = allocs.filter(a => String(a.status || '').toLowerCase() !== 'released');
+        const assignedRows = activeAllocs.length ? activeAllocs.map(a => {
+            const emp = empMap[a.employee_id];
+            const name = emp?.full_name || a.employee_id;
+            const dept = emp?.department || '—';
+            const role = a.project_role || emp?.designation || '—';
+            const pct = Number(a.allocation_pct) || 0;
+            return `<tr>
+                <td>
+                    <div class="rm-emp-cell">
+                        <div class="rm-avatar rm-avatar--user" style="background:${stringToColor(name)}">${getInitials(name)}</div>
+                        <div>
+                            <div class="rm-list-name">${escapeHtml(name)}</div>
+                            <div class="rm-list-meta">${escapeHtml(dept)}</div>
+                        </div>
+                    </div>
+                </td>
+                <td>${escapeHtml(role)}</td>
+                <td><strong>${pct}%</strong></td>
+                <td><span class="rm-pill">${escapeHtml(a.status || 'Active')}</span></td>
+                <td>${a.start_date ? escapeHtml(String(a.start_date).slice(0, 10)) : '—'}
+                    ${a.end_date ? ` → ${escapeHtml(String(a.end_date).slice(0, 10))}` : ''}</td>
+                <td><button type="button" class="rm-link" onclick="App.releaseApiAllocation('${escapeHtml(a.id)}')">Release</button></td>
+            </tr>`;
+        }).join('') : '';
+
+        const isOps = getRmActivityType(p) === 'operational';
+        const typeBadge = isOps
+            ? `<span class="rm-proj-type-badge rm-proj-type-badge--ops">Operational</span>`
+            : `<span class="rm-proj-active-badge">Active project</span>`;
+
+        return `
+        <div class="rm-proj-detail card-light">
+            <div class="rm-proj-detail-head">
+                <div class="rm-proj-detail-hero">
+                    ${renderRmProjectIcon(p.name)}
+                    <div>
+                        <div class="rm-proj-detail-name-row">
+                            <h3 class="rm-proj-detail-title">${escapeHtml(p.name)}</h3>
+                            ${typeBadge}
+                        </div>
+                        <p class="rm-proj-detail-sub">${isOps ? 'Internal / operational activity' : `Release: ${escapeHtml(p.release_date || '—')}`}</p>
+                    </div>
+                </div>
+                <div class="rm-proj-detail-actions">
+                    ${(() => {
+                        const catId = p.catalogId || (p.source && p.source !== 'sheet' ? p.id : null)
+                            || ((AppState.resourceApiProjects || []).find(x => String(x.external_id) === String(extId)) || {}).id
+                            || null;
+                        if (catId) {
+                            return `
+                            <button type="button" class="rm-proj-btn-ghost" onclick='App.setProjectActivityType(${JSON.stringify(catId)}, ${JSON.stringify(isOps ? 'project' : 'operational')})'>
+                                Mark as ${isOps ? 'Active project' : 'Operational'}
+                            </button>
+                            <button type="button" class="rm-proj-btn-ghost" onclick="App.openProjectPaneEdit('${escapeHtml(catId)}')">Edit</button>
+                            <button type="button" class="rm-proj-btn-danger" title="Delete"
+                                onclick='App.deleteResourceProject(${JSON.stringify(catId)}, ${JSON.stringify(p.name || '')})'>Delete</button>`;
+                        }
+                        return `
+                            <button type="button" class="rm-proj-btn-danger" disabled title="Sync this sheet project into the API catalog first">Delete</button>
+                            <button type="button" class="rm-proj-btn-ghost" onclick="App.syncResourceApi({ silent: false })">Sync to enable</button>`;
+                    })()}
+                </div>
+            </div>
+            <div class="rm-proj-detail-stats">
+                <div><span class="rm-proj-stat-val">${activeAllocs.length}</span><span class="rm-proj-stat-lbl">Assigned</span></div>
+                <div><span class="rm-proj-stat-val">${(Math.round((projectFte / 100) * 10) / 10)} FTE</span><span class="rm-proj-stat-lbl">${activeAllocs.length} ${activeAllocs.length === 1 ? 'person' : 'people'}</span></div>
+                <div><span class="rm-proj-stat-val">${daysLeft != null ? Math.max(0, daysLeft) : '—'}</span><span class="rm-proj-stat-lbl">Days Left</span></div>
+                <div class="rm-proj-stat-badge">${formatRmProjectStageBadge(p)}</div>
+            </div>
+
+            <div class="rm-proj-assigned">
+                <div class="rm-proj-assign-head">
+                    <h4>Assigned team</h4>
+                    <span class="rm-list-meta">${activeAllocs.length} people · ${(Math.round((projectFte / 100) * 10) / 10)} FTE</span>
+                </div>
+                ${assignedRows ? `
+                <div class="rm-table-wrap rm-proj-assigned-table">
+                    <table class="rm-table">
+                        <thead>
+                            <tr>
+                                <th>Employee</th><th>Role</th><th>FTE %</th><th>Status</th><th>Dates</th><th></th>
+                            </tr>
+                        </thead>
+                        <tbody>${assignedRows}</tbody>
+                    </table>
+                </div>` : `<div class="rm-empty rm-empty--inline">No one assigned yet.</div>`}
+            </div>
+
+            <div class="rm-proj-assign">
+                <div class="rm-proj-assign-head">
+                    <h4>Assign people</h4>
+                    <div class="rm-proj-assign-tools">
+                        <input class="rm-search rm-alloc-people-search" type="search" placeholder="Search people…"
+                            value="${escapeHtml(AppState.resourceAllocPeopleFilter || '')}"
+                            oninput="App.setResourceAllocPeopleFilter(this.value)" />
+                        <select class="rm-proj-role-filter" onchange="App.setResourceAllocRoleFilter(this.value)">${roleOpts}</select>
+                    </div>
+                </div>
+                <form class="rm-proj-assign-form" onsubmit="event.preventDefault();App.submitAllocModal(this)">
+                    <input type="hidden" name="project_external_id" value="${escapeHtml(extId)}" />
+                    <input type="hidden" name="allocation_pct" value="${draft.allocationPct || 100}" />
+                    <input type="hidden" name="project_role" value="${escapeHtml(draft.projectRole || '')}" />
+                    <input type="hidden" name="start_date" value="${escapeHtml(draft.startDate || '')}" />
+                    <input type="hidden" name="end_date" value="${escapeHtml(draft.endDate || '')}" />
+                    <div class="rm-proj-assign-meta rm-proj-assign-meta--defaults">
+                        <div class="rm-proj-assign-fields">
+                            <label>FTE % (each)
+                                <input type="number" min="1" max="100" value="${draft.allocationPct || 100}"
+                                    oninput="App.setAllocDraftPct(this.value); this.closest('form').querySelector('[name=allocation_pct]').value=this.value" />
+                            </label>
+                            <label>Role <span class="rm-field-hint">(leave blank to use each person's designation)</span>
+                                <input type="text" placeholder="e.g. Backend Developer" value="${escapeHtml(draft.projectRole || '')}"
+                                    oninput="this.closest('form').querySelector('[name=project_role]').value=this.value;App.ensureAllocDraft().projectRole=this.value" />
+                            </label>
+                        </div>
+                        <label class="rm-check"><input type="checkbox" name="strict" ${draft.strict ? 'checked' : ''} /> Reject if anyone would exceed 100% FTE</label>
+                    </div>
+                    <div class="rm-alloc-chips" id="rm-alloc-selected-chips">
+                        ${selectedChips || `<span class="rm-hint">Select one or more people below</span>`}
+                    </div>
+                    ${assignTable}
+                    <div class="rm-proj-assign-foot">
+                        <div class="rm-proj-assign-summary">
+                            <span id="rm-alloc-selected-count">${selected.size} people selected</span>
+                            <span id="rm-alloc-total-fte">Total: ${(Math.round((totalSelectedFte / 100) * 10) / 10)} FTE</span>
+                        </div>
+                        <button type="submit" class="rm-proj-btn-primary">Assign</button>
+                    </div>
+                </form>
+            </div>
+        </div>`;
+    }
+
+    return `
+    <div class="rm-proj-detail card-light rm-proj-detail--empty">
+        <div class="rm-pane-empty">
+            <p class="rm-pane-empty-title">Select a project</p>
+            <p class="rm-hint">Choose a project from the list to view staffing and assign people.</p>
+            <button type="button" class="rm-proj-btn-primary" onclick="App.openProjectPaneCreate()">+ New Project</button>
+        </div>
+    </div>`;
+}
+
+function renderRmProjectsTab(apiOnline) {
+    if (!apiOnline) {
+        return `<div class="rm-empty">Start the Resource API to add and manage staffing projects.</div>`;
+    }
+    const q = String(AppState.resourceProjectFilter || '').trim().toLowerCase();
+    const listView = AppState.resourceProjectListView || 'active';
+    const page = Math.max(1, AppState.resourceProjectPage || 1);
+    const pageSize = 50;
+    const allocs = AppState.resourceApiAllocations || [];
+    const empMap = Object.fromEntries((AppState.resourceApiEmployees || []).map(e => [e.id, e]));
+    const selectedId = AppState.resourceSelectedProjectId;
+    const selectedExt = AppState.resourceSelectedProjectExternalId;
+
+    let projects = filterRmProjectsByView(getRmMergedProjects(), listView);
+    if (q) {
+        projects = projects.filter(p =>
+            String(p.name || '').toLowerCase().includes(q)
+            || String(p.client || '').toLowerCase().includes(q)
+            || String(p.external_id || '').toLowerCase().includes(q));
+    }
+
+    const kpis = getRmProjectsKpis(projects, allocs);
+    const totalPages = Math.max(1, Math.ceil(projects.length / pageSize));
+    const safePage = Math.min(page, totalPages);
+    if (safePage !== page) AppState.resourceProjectPage = safePage;
+    const pageProjects = projects.slice((safePage - 1) * pageSize, safePage * pageSize);
+
+    const subTabs = [
+        { id: 'active', label: 'Active Projects' },
+        { id: 'operational', label: 'Operational' },
+        { id: 'recent', label: 'Recent' },
+        { id: 'archived', label: 'Archived' },
+    ];
+    const subTabBar = subTabs.map(t => `
+        <button type="button" class="rm-proj-subtab ${listView === t.id || (t.id === 'active' && listView === 'all') ? 'rm-proj-subtab--active' : ''}"
+            onclick="App.setResourceProjectListView('${t.id}')">${t.label}</button>
+    `).join('');
+
+    const rows = pageProjects.length ? pageProjects.map(p => {
+        const extId = p.external_id || p.id;
+        const projAllocs = allocs.filter(a => a.project_external_id === extId && String(a.status || '').toLowerCase() !== 'released');
+        const peopleIds = projAllocs.map(a => a.employee_id);
+        const fte = getRmProjectFte(extId, allocs);
+        const isSelected = (p.catalogId && selectedId === p.catalogId) || selectedExt === extId;
+        const catArg = p.catalogId ? escapeHtml(p.catalogId) : '';
+        const catId = p.catalogId
+            || ((AppState.resourceApiProjects || []).find(x => String(x.external_id) === String(extId)) || {}).id
+            || '';
+        const isOps = getRmActivityType(p) === 'operational';
+        return `<tr class="rm-proj-row ${isSelected ? 'rm-proj-row--selected' : ''}"
+                onclick="App.selectRmProject('${catArg}', '${escapeHtml(extId)}')">
+            <td class="rm-proj-name-col">
+                <div class="rm-proj-name-cell">
+                    ${renderRmProjectIcon(p.name)}
+                    <div>
+                        <div class="rm-proj-name-line">
+                            <span class="rm-proj-name">${escapeHtml(p.name)}</span>
+                            ${formatRmActivityBadge(p)}
+                        </div>
+                    </div>
+                </div>
+            </td>
+            <td class="rm-proj-muted${p.client ? '' : ' rm-proj-muted--empty'}">${escapeHtml(p.client || (isOps ? 'Internal' : 'No client'))}</td>
+            <td class="rm-proj-muted">${escapeHtml(p.release_date || '—')}</td>
+            <td>${renderRmAvatarStack(peopleIds, empMap)}</td>
+            <td>${renderRmFteCell(fte, peopleIds.length)}</td>
+            <td>${formatRmProjectStageBadge(p)}</td>
+            <td class="rm-proj-action-col" onclick="event.stopPropagation()">
+                <details class="rm-proj-row-menu">
+                    <summary class="rm-proj-menu-btn" title="Actions" aria-label="Project actions">⋯</summary>
+                    <div class="rm-proj-row-menu-panel">
+                        <button type="button" class="rm-proj-row-menu-item" onclick='App.openAllocModal("", ${JSON.stringify(extId)})'>Allocate</button>
+                        ${catId ? `<button type="button" class="rm-proj-row-menu-item" onclick='App.setProjectActivityType(${JSON.stringify(catId)}, ${JSON.stringify(isOps ? 'project' : 'operational')})'>Mark as ${isOps ? 'Active project' : 'Operational'}</button>` : ''}
+                        ${catId
+                            ? `<button type="button" class="rm-proj-row-menu-item rm-proj-row-menu-item--danger" onclick='App.deleteResourceProject(${JSON.stringify(catId)}, ${JSON.stringify(p.name || '')})'>Delete</button>`
+                            : `<button type="button" class="rm-proj-row-menu-item" disabled title="Sync API first">Delete</button>`}
+                    </div>
+                </details>
+            </td>
+        </tr>`;
+    }).join('') : `<tr><td colspan="7" class="rm-empty">${q ? 'No matches.' : (listView === 'operational' ? 'No operational activities yet. Mark an item as Operational from the row menu or Edit.' : 'No active projects yet.')}</td></tr>`;
+
+    const pageNums = Array.from({ length: totalPages }, (_, i) => i + 1).map(n =>
+        `<button type="button" class="rm-proj-page-btn ${n === safePage ? 'rm-proj-page-btn--active' : ''}"
+            onclick="App.setResourceProjectPage(${n})">${n}</button>`
+    ).join('');
+
+    const from = projects.length ? (safePage - 1) * pageSize + 1 : 0;
+    const to = Math.min(safePage * pageSize, projects.length);
+    const noun = listView === 'operational' ? 'activities' : 'projects';
+
+    return `
+    <div class="rm-proj-page">
+        ${renderRmProjectsKpiRow(kpis)}
+        <div class="rm-proj-workspace">
+            <div class="rm-proj-list card-light">
+                <div class="rm-proj-list-head">
+                    <div class="rm-proj-subtabs">${subTabBar}</div>
+                    <div class="rm-proj-list-toolbar">
+                        <div class="rm-proj-search-wrap">
+                            <span class="ui-inline-icon rm-proj-search-icon">${Icons.search}</span>
+                            <input class="rm-search rm-project-search rm-proj-search-input" type="search" placeholder="Search…"
+                                value="${escapeHtml(AppState.resourceProjectFilter || '')}"
+                                oninput="App.setResourceProjectFilter(this.value)" />
+                        </div>
+                        <button type="button" class="rm-proj-btn-primary" onclick="App.openProjectPaneCreate()">+ New</button>
+                    </div>
+                </div>
+                <div class="rm-proj-table-wrap">
+                    <table class="rm-proj-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th><th>Client</th><th>Release</th><th>People</th>
+                                <th>Staffing</th><th>Status</th><th></th>
+                            </tr>
+                        </thead>
+                        <tbody>${rows}</tbody>
+                    </table>
+                </div>
+                <div class="rm-proj-pagination">
+                    <span>Showing ${from} to ${to} of ${projects.length} ${noun}</span>
+                    <div class="rm-proj-page-btns">${pageNums}</div>
+                </div>
+            </div>
+            <aside class="rm-proj-pane">${renderRmProjectPane(apiOnline)}</aside>
+        </div>
+    </div>`;
+}
+
+function renderRmEmployeeDrawer(apiEmps, apiOnline) {
+    const id = AppState.resourceSelectedEmployeeId;
+    if (!id || !apiOnline) return '';
+    const emp = (apiEmps || []).find(e => e.id === id);
+    if (!emp) return '';
+    const allocs = (AppState.resourceApiAllocations || []).filter(a => a.employee_id === id);
+    const allocRows = allocs.length ? allocs.map(a => {
+        const proj = getRmAllocatableProjects().find(p => p.id === a.project_external_id)
+            || (AppState.resourceApiProjects || []).find(p => p.external_id === a.project_external_id)
+            || (AppState.allProjects || []).find(p => p.id === a.project_external_id);
+        const name = proj ? (proj.name || proj.external_id) : a.project_external_id;
+        return `<div class="rm-list-row">
+            <div class="rm-list-main">
+                <div class="rm-list-name">${escapeHtml(name)}</div>
+                <div class="rm-list-meta">${a.allocation_pct}% · ${escapeHtml(a.project_role || '—')} · ${escapeHtml(a.status)}</div>
+            </div>
+            <button type="button" class="rm-link" onclick="App.releaseApiAllocation('${escapeHtml(a.id)}')">Release</button>
+        </div>`;
+    }).join('') : `<div class="rm-empty">No active FTE allocations</div>`;
+
+    return `
+    <div class="rm-drawer-backdrop" onclick="if(event.target===this)App.selectResourceEmployee(null)">
+        <aside class="rm-drawer card-light">
+            <div class="rm-modal-head">
+                <h3>${escapeHtml(emp.full_name)}</h3>
+                <button type="button" class="rm-modal-close" onclick="App.selectResourceEmployee(null)">×</button>
+            </div>
+            <p class="rm-list-meta">${escapeHtml(emp.department || '—')} · ${escapeHtml(emp.designation || '—')}</p>
+            <p class="rm-report-body">Util ${emp.utilization_pct || 0}% · ${escapeHtml(emp.availability_status || '—')}
+                ${emp.years_experience != null ? ` · ${emp.years_experience}y exp` : ''}</p>
+            <div class="rm-emp-drawer-actions">
+                ${isRmProjectStaffable(emp)
+                    ? `<button type="button" class="streak-pd-action-btn" onclick="App.openAllocModal('${escapeHtml(emp.id)}')">Allocate to project</button>`
+                    : `<span class="rm-hint">Director / leadership — not assigned to delivery projects</span>`}
+                <button type="button" class="rm-proj-btn-danger" onclick='App.deleteResourceEmployee(${JSON.stringify(emp.id)}, ${JSON.stringify(emp.full_name || '')})'>Delete employee</button>
+            </div>
+            <h4 class="rm-card-title" style="margin-top:16px;">Active FTE</h4>
+            <div class="rm-list">${allocRows}</div>
+        </aside>
+    </div>`;
+}
+
+function renderRmDashboardTab(roster, summary, apiOnline) {
+    const brief = getRmCapacityBrief(summary);
+    const over = summary.overAllocated != null ? summary.overAllocated : summary.conflicts;
+    const full = Math.max(0, (summary.allocated || 0) - (summary.partial || 0));
+    const partial = summary.partial || 0;
+    const bench = summary.bench || 0;
+    const staffable = Math.max(1, full + partial + bench);
+    const fullPct = Math.round((full / staffable) * 100);
+    const partialPct = Math.round((partial / staffable) * 100);
+    const benchPct = Math.max(0, 100 - fullPct - partialPct);
+
+    const kpis = [
+        {
+            val: `${summary.avgUtil || 0}%`,
+            label: 'Avg utilization',
+            sub: summary.fromApi ? 'Delivery capacity' : 'From delivery load',
+            tone: (summary.avgUtil || 0) >= 95 ? 'tight' : 'neutral',
+            action: null,
+        },
+        {
+            val: bench,
+            label: 'Available now',
+            sub: 'Ready for new work',
+            tone: bench === 0 ? 'tight' : 'ok',
+            action: "App.setResourcesManagerTab('bench')",
+        },
+        {
+            val: over || 0,
+            label: 'Overbooked',
+            sub: 'Need rebalancing',
+            tone: (over || 0) > 0 ? 'risk' : 'ok',
+            action: "App.setResourcesManagerTab('employees')",
+        },
+        {
+            val: summary.freeing30 || 0,
+            label: 'Freeing in 30 days',
+            sub: 'Upcoming capacity',
+            tone: 'neutral',
+            action: null,
+        },
+    ];
+
+    const kpiHtml = kpis.map(k => {
+        const cls = `rm-lead-kpi rm-lead-kpi--${k.tone}${k.action ? ' rm-lead-kpi--click' : ''}`;
+        const inner = `
+            <div class="rm-lead-kpi-val">${k.val}</div>
+            <div class="rm-lead-kpi-lbl">${k.label}</div>
+            <div class="rm-lead-kpi-sub">${k.sub}</div>`;
+        if (k.action) {
+            return `<button type="button" class="${cls}" onclick="${k.action}">${inner}</button>`;
+        }
+        return `<div class="${cls}">${inner}</div>`;
+    }).join('');
+
+    const mixHtml = `
+        <div class="rm-cap-mix">
+            <div class="rm-cap-donut" style="background:conic-gradient(
+                #137333 0 ${fullPct}%,
+                #1a73e8 ${fullPct}% ${fullPct + partialPct}%,
+                #94a3b8 ${fullPct + partialPct}% 100%)">
+                <div class="rm-cap-donut-inner">
+                    <strong>${summary.allocated || 0}</strong>
+                    <span>on work</span>
+                </div>
+            </div>
+            <ul class="rm-cap-legend">
+                <li><span class="rm-cap-swatch" style="background:#137333"></span> Fully allocated · ${full}</li>
+                <li><span class="rm-cap-swatch" style="background:#1a73e8"></span> Split across projects · ${partial}</li>
+                <li><span class="rm-cap-swatch" style="background:#94a3b8"></span> Available · ${bench}</li>
+            </ul>
+        </div>`;
+
+    const attention = (AppState.attentionRanked || [])
+        .filter(p => p.attentionTier === 'critical' || p.attentionTier === 'high' || p.attentionTier === 'medium')
+        .slice(0, 6);
+    const attentionHtml = attention.length ? attention.map(p => {
+        const m = typeof attentionTierMeta === 'function'
+            ? attentionTierMeta(p.attentionTier)
+            : { color: '#b45309', bg: 'rgba(249,171,0,0.1)', label: p.attentionTier };
+        const reason = (p.attentionReasons || [])[0] || 'Needs staffing attention';
+        return `
+        <button type="button" class="rm-lead-row" onclick="App.handleCardClick('${escapeHtml(p.id)}')">
+            <div class="rm-lead-row-main">
+                <div class="rm-lead-row-title">${escapeHtml(p.name)}</div>
+                <div class="rm-lead-row-meta">${escapeHtml(p.stage || '')} · ${escapeHtml(reason)}</div>
+            </div>
+            <span class="rm-pill" style="background:${m.bg};color:${m.color}">${escapeHtml(m.label || p.attentionTier)}</span>
+        </button>`;
+    }).join('') : `<div class="rm-empty">No high-attention projects right now.</div>`;
+
+    const availablePeople = apiOnline
+        ? (AppState.resourceApiEmployees || [])
+            .filter(e => isRmProjectStaffable(e) && (
+                (e.utilization_pct || 0) <= 0
+                || /bench|available/i.test(e.availability_status || '')
+            ) && !/leadership/i.test(e.availability_status || ''))
+            .sort((a, b) => (a.full_name || '').localeCompare(b.full_name || ''))
+            .slice(0, 8)
+        : roster.filter(e => e.availability === 'Bench' && isRmProjectStaffable(e)).slice(0, 8);
+
+    const availableHtml = availablePeople.length ? availablePeople.map(e => {
+        const name = e.full_name || e.name;
+        const id = e.id;
+        const dept = e.department || '—';
+        const desig = e.designation || e.role || '—';
+        return `
+        <div class="rm-lead-row rm-lead-row--static">
+            <div class="rm-avatar" style="background:${stringToColor(name)}">${getInitials(name)}</div>
+            <div class="rm-lead-row-main">
+                <div class="rm-lead-row-title">${escapeHtml(name)}</div>
+                <div class="rm-lead-row-meta">${escapeHtml(dept)} · ${escapeHtml(desig)}</div>
+            </div>
+            ${apiOnline && typeof App !== 'undefined' && App.canManageResources && App.canManageResources()
+                ? `<button type="button" class="rm-link" onclick="App.openAllocModal('${escapeHtml(id)}')">Assign</button>`
+                : `<span class="rm-pill rm-pill--bench">Available</span>`}
+        </div>`;
+    }).join('') : `<div class="rm-empty">Nobody available right now.</div>`;
+
+    const upcoming = roster
+        .filter(e => e.freeFrom && e.activeCount > 0)
+        .sort((a, b) => a.freeFrom - b.freeFrom)
+        .slice(0, 6);
+    const upcomingHtml = upcoming.length ? upcoming.map(e => `
+        <div class="rm-lead-row rm-lead-row--static">
+            <div class="rm-avatar" style="background:${stringToColor(e.name)}">${getInitials(e.name)}</div>
+            <div class="rm-lead-row-main">
+                <div class="rm-lead-row-title">${escapeHtml(e.name)}</div>
+                <div class="rm-lead-row-meta">${escapeHtml(e.designation || '')} · ${e.activeCount} active</div>
+            </div>
+            <div class="rm-lead-row-right">Free ${e.freeFrom.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</div>
+        </div>`).join('') : `<div class="rm-empty">No dated roll-offs yet.</div>`;
+
+    const depts = Object.entries(summary.byDepartment || {})
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 8)
+        .map(([name, n]) => `
+            <div class="rm-dept-row">
+                <span class="rm-dept-name">${escapeHtml(name)}</span>
+                <div class="rm-dept-track"><div class="rm-dept-fill" style="width:${Math.round((n / Math.max(summary.total, 1)) * 100)}%"></div></div>
+                <span class="rm-dept-n">${n}</span>
+            </div>`).join('');
+
+    const trend = AppState.resourceUtilTrend || [];
+    const demand = AppState.resourceDemandForecast || [];
+    const insightExtras = [];
+    if (trend.length) {
+        insightExtras.push(`
+        <div class="card-light rm-card">
+            <h3 class="rm-card-title">Utilization trend</h3>
+            <div class="rm-trend">
+                ${trend.slice(-12).map(t => {
+                    const h = Math.max(4, Math.round((t.avg_utilization_pct || 0) / 100 * 48));
+                    return `<div class="rm-trend-bar" title="${escapeHtml(t.date)}: ${t.avg_utilization_pct}%" style="height:${h}px"></div>`;
+                }).join('')}
+            </div>
+            <div class="rm-list-meta">Last ${Math.min(12, trend.length)} snapshots</div>
+        </div>`);
+    }
+    if (demand.length) {
+        insightExtras.push(`
+        <div class="card-light rm-card">
+            <h3 class="rm-card-title">Demand by release month</h3>
+            <div class="rm-list">${demand.slice(0, 6).map(d => `
+                <div class="rm-list-row">
+                    <div class="rm-list-main">
+                        <div class="rm-list-name">${escapeHtml(d.month)}</div>
+                        <div class="rm-list-meta">${(d.names || []).slice(0, 2).map(escapeHtml).join(', ') || '—'}</div>
+                    </div>
+                    <div class="rm-list-right">${d.projects} proj · ~${d.heads_needed_est} heads</div>
+                </div>`).join('')}</div>
+        </div>`);
+    }
+
+    return `
+    <section class="rm-lead-hero card-light">
+        <div class="rm-lead-hero-copy">
+            <p class="rm-lead-eyebrow">Workforce capacity</p>
+            <h3 class="rm-lead-headline">${escapeHtml(brief.text)}</h3>
+        </div>
+        <div class="rm-lead-kpi-grid">${kpiHtml}</div>
+    </section>
+
+    <div class="rm-lead-grid">
+        <div class="card-light rm-card">
+            <div class="rm-card-head">
+                <h3 class="rm-card-title">Capacity mix</h3>
+                <button type="button" class="rm-link" onclick="App.setResourcesManagerTab('employees')">View people</button>
+            </div>
+            ${mixHtml}
+        </div>
+        <div class="card-light rm-card">
+            <div class="rm-card-head">
+                <h3 class="rm-card-title">Needs attention</h3>
+                <button type="button" class="rm-link" onclick="App.setResourcesManagerTab('projects')">Projects</button>
+            </div>
+            <div class="rm-lead-list">${attentionHtml}</div>
+        </div>
+    </div>
+
+    <div class="rm-lead-grid">
+        <div class="card-light rm-card">
+            <div class="rm-card-head">
+                <h3 class="rm-card-title">Available for new work (${availablePeople.length}${bench > availablePeople.length ? ` of ${bench}` : ''})</h3>
+                <button type="button" class="rm-link" onclick="App.setResourcesManagerTab('bench')">See all</button>
+            </div>
+            <div class="rm-lead-list">${availableHtml}</div>
+        </div>
+        <div class="card-light rm-card">
+            <div class="rm-card-head">
+                <h3 class="rm-card-title">Freeing soon</h3>
+            </div>
+            <div class="rm-lead-list">${upcomingHtml}</div>
+        </div>
+    </div>
+
+    <div class="rm-lead-grid">
+        <div class="card-light rm-card">
+            <h3 class="rm-card-title">Team size by department</h3>
+            <div class="rm-dept-list">${depts || '<div class="rm-empty">No departments</div>'}</div>
+        </div>
+        ${insightExtras[0] || `
+        <div class="card-light rm-card rm-card--hint">
+            <h3 class="rm-card-title">Insights</h3>
+            <p class="rm-hint" style="margin:0;">Utilization trend and demand forecast appear here after Sync and daily jobs have run.</p>
+        </div>`}
+    </div>
+    ${insightExtras.length > 1 ? `<div class="rm-lead-grid">${insightExtras.slice(1).join('')}</div>` : ''}`;
+}
+
+function renderRmEmployeesTab(roster, apiEmps, apiOnline) {
+    const q = String(AppState.resourceRosterFilter || '').trim().toLowerCase();
+    const deptF = String(AppState.resourceEmpDeptFilter || '').trim().toLowerCase();
+    const roleF = String(AppState.resourceEmpRoleFilter || '').trim().toLowerCase();
+    const availF = String(AppState.resourceEmpAvailFilter || '').trim().toLowerCase();
+    const useApi = apiOnline && (apiEmps || []).length;
+    const list = useApi
+        ? (apiEmps || []).map(e => ({
+            id: e.id,
+            name: e.full_name,
+            employeeCode: e.employee_code || '—',
+            department: e.department || '—',
+            designation: e.designation || '—',
+            yearsAtCompany: e.years_at_company,
+            totalExperience: e.years_experience,
+            availability: e.availability_status || 'Bench',
+            utilPct: e.utilization_pct || 0,
+            activeCount: 0,
+            assignments: [],
+            api: true,
+        }))
+        : roster;
+
+    let filtered = list;
+    if (q) {
+        filtered = filtered.filter(e =>
+            String(e.name || '').toLowerCase().includes(q)
+            || String(e.department || '').toLowerCase().includes(q)
+            || String(e.designation || '').toLowerCase().includes(q)
+            || String(e.employeeCode || '').toLowerCase().includes(q));
+    }
+    if (deptF) {
+        filtered = filtered.filter(e => String(e.department || '').toLowerCase() === deptF);
+    }
+    if (roleF) {
+        filtered = filtered.filter(e => String(e.designation || '').toLowerCase() === roleF);
+    }
+    if (availF === 'bench') {
+        filtered = filtered.filter(e => (e.utilPct || 0) <= 0 || /bench|available/i.test(e.availability || ''));
+    } else if (availF === 'partial') {
+        filtered = filtered.filter(e => (e.utilPct || 0) > 0 && (e.utilPct || 0) < 100);
+    } else if (availF === 'full') {
+        filtered = filtered.filter(e => (e.utilPct || 0) >= 100 || /full/i.test(e.availability || ''));
+    }
+
+    const depts = [...new Set(list.map(e => e.department).filter(d => d && d !== '—'))].sort((a, b) => a.localeCompare(b));
+    const roles = [...new Set(list.map(e => e.designation).filter(d => d && d !== '—'))].sort((a, b) => a.localeCompare(b));
+    const filtersOn = !!(q || deptF || roleF || availF);
+
+    const rows = filtered.map(e => {
+        const apiEmp = useApi ? (apiEmps.find(x => x.id === e.id) || null) : null;
+        const staffable = useApi ? isRmProjectStaffable(apiEmp || e) : true;
+        const availCls = /leadership/i.test(e.availability) || !staffable ? 'full'
+            : /bench|available/i.test(e.availability) ? 'bench'
+            : /full/i.test(e.availability) || (e.utilPct || 0) >= 100 ? 'full' : 'partial';
+        const exp = e.totalExperience != null ? `${e.totalExperience}y total` : '—';
+        const tenure = e.yearsAtCompany != null ? `${e.yearsAtCompany}y here` : '—';
+        const click = useApi ? `onclick="App.selectResourceEmployee('${escapeHtml(e.id)}')"` : '';
+        return `
+        <tr class="rm-emp-row ${useApi ? 'rm-emp-row--click' : ''}" ${click}>
+            <td>${useApi ? renderRmUserCell(apiEmp || { full_name: e.name, employee_code: e.employeeCode, department: e.department }) : `
+                <div class="rm-emp-cell">
+                    <div class="rm-avatar rm-avatar--user" style="background:${stringToColor(e.name)}">${getInitials(e.name)}</div>
+                    <div>
+                        <div class="rm-list-name">${escapeHtml(e.name)}</div>
+                        <div class="rm-list-meta">#${escapeHtml(String(e.employeeCode))}</div>
+                    </div>
+                </div>`}
+            </td>
+            <td>${escapeHtml(e.department)}</td>
+            <td>${escapeHtml(e.designation)}</td>
+            <td>${tenure}<div class="rm-list-meta">${exp}</div></td>
+            <td><span class="rm-pill rm-pill--${availCls}">${escapeHtml(!staffable && !/leadership/i.test(e.availability) ? 'Leadership' : e.availability)}</span></td>
+            <td>
+                <div class="rm-util-wrap">
+                    <div class="rm-util-track"><div class="rm-util-fill" style="width:${Math.min(100, e.utilPct)}%"></div></div>
+                    <span>${e.utilPct}%</span>
+                </div>
+            </td>
+            <td>${useApi
+                ? `<span class="rm-emp-actions" onclick="event.stopPropagation()">
+                    ${staffable ? `<button type="button" class="rm-link" onclick="App.openAllocModal('${escapeHtml(e.id)}')">Allocate</button>` : `<span class="rm-list-meta">Leadership</span>`}
+                    <button type="button" class="rm-link rm-link--danger" onclick='App.deleteResourceEmployee(${JSON.stringify(e.id)}, ${JSON.stringify(e.name || '')})'>Delete</button>
+                   </span>`
+                : (e.assignments || []).slice(0, 2).map(a => escapeHtml(a.projectName)).join(', ') || '—'}</td>
+        </tr>`;
+    }).join('');
+
+    return `
+    <div class="rm-toolbar rm-emp-filters">
+        <input class="rm-search" type="search" placeholder="Search name, department, designation…"
+            value="${escapeHtml(AppState.resourceRosterFilter || '')}"
+            oninput="App.setResourceRosterFilter(this.value)" />
+        <select class="rm-select" aria-label="Filter by department" onchange="App.setResourceEmpDeptFilter(this.value)">
+            <option value="">All departments</option>
+            ${depts.map(d => `<option value="${escapeHtml(d)}" ${deptF === d.toLowerCase() ? 'selected' : ''}>${escapeHtml(d)}</option>`).join('')}
+        </select>
+        <select class="rm-select" aria-label="Filter by designation" onchange="App.setResourceEmpRoleFilter(this.value)">
+            <option value="">All designations</option>
+            ${roles.map(r => `<option value="${escapeHtml(r)}" ${roleF === r.toLowerCase() ? 'selected' : ''}>${escapeHtml(r)}</option>`).join('')}
+        </select>
+        <select class="rm-select" aria-label="Filter by availability" onchange="App.setResourceEmpAvailFilter(this.value)">
+            <option value="">All availability</option>
+            <option value="bench" ${availF === 'bench' ? 'selected' : ''}>Bench / available</option>
+            <option value="partial" ${availF === 'partial' ? 'selected' : ''}>Partial</option>
+            <option value="full" ${availF === 'full' ? 'selected' : ''}>Fully allocated</option>
+        </select>
+        <button type="button" class="rm-proj-btn-ghost" ${filtersOn ? '' : 'disabled'} onclick="App.clearResourceEmpFilters()">Reset</button>
+        <span class="rm-toolbar-meta">${filtered.length} of ${list.length}${useApi ? ' · FTE DB' : ' · sheet'}</span>
+    </div>
+    <div class="rm-table-wrap card-light">
+        <table class="rm-table">
+            <thead>
+                <tr>
+                    <th>Employee</th><th>Department</th><th>Designation</th>
+                    <th>Experience</th><th>Status</th><th>Utilization</th><th>${useApi ? 'Actions' : 'Projects'}</th>
+                </tr>
+            </thead>
+            <tbody>${rows || `<tr><td colspan="7" class="rm-empty">No employees match filters.</td></tr>`}</tbody>
+        </table>
+    </div>`;
+}
+
+function renderRmAllocationsTab(roster, apiOnline) {
+    const q = String(AppState.resourceAllocListFilter || '').trim().toLowerCase();
+    const projectF = String(AppState.resourceAllocListProjectFilter || '').trim();
+    const deptF = String(AppState.resourceAllocListDeptFilter || '').trim().toLowerCase();
+    const roleF = String(AppState.resourceAllocListRoleFilter || '').trim().toLowerCase();
+    const statusF = String(AppState.resourceAllocListStatusFilter || '').trim().toLowerCase();
+    const filtersOn = !!(q || projectF || deptF || roleF || statusF);
+
+    if (apiOnline && (AppState.resourceApiAllocations || []).length >= 0) {
+        const allocs = AppState.resourceApiAllocations || [];
+        const empMap = Object.fromEntries((AppState.resourceApiEmployees || []).map(e => [e.id, e]));
+        const catalog = Object.fromEntries((AppState.resourceApiProjects || []).map(p => [p.external_id, p]));
+        const projMap = Object.fromEntries((AppState.allProjects || []).map(p => [p.id, p]));
+
+        const enriched = allocs.map(a => {
+            const emp = empMap[a.employee_id];
+            const proj = catalog[a.project_external_id] || projMap[a.project_external_id];
+            return {
+                a,
+                empName: emp ? emp.full_name : a.employee_id,
+                dept: emp?.department || '',
+                projName: proj ? (proj.name || a.project_external_id) : a.project_external_id,
+                projExt: a.project_external_id,
+                role: (a.project_role && a.project_role !== 'Developer')
+                    ? a.project_role
+                    : (emp?.designation || a.project_role || ''),
+                status: a.status || '',
+            };
+        });
+
+        const projects = [...new Map(enriched.map(r => [r.projExt, r.projName])).entries()]
+            .sort((a, b) => String(a[1]).localeCompare(String(b[1])));
+        const depts = [...new Set(enriched.map(r => r.dept).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+        const roles = [...new Set(enriched.map(r => r.role).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+        const statuses = [...new Set(enriched.map(r => r.status).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+
+        let filtered = enriched;
+        if (q) {
+            filtered = filtered.filter(r =>
+                String(r.empName || '').toLowerCase().includes(q)
+                || String(r.projName || '').toLowerCase().includes(q)
+                || String(r.role || '').toLowerCase().includes(q)
+                || String(r.dept || '').toLowerCase().includes(q)
+                || String(r.projExt || '').toLowerCase().includes(q));
+        }
+        if (projectF) filtered = filtered.filter(r => String(r.projExt) === projectF);
+        if (deptF) filtered = filtered.filter(r => String(r.dept || '').toLowerCase() === deptF);
+        if (roleF) filtered = filtered.filter(r => String(r.role || '').toLowerCase() === roleF);
+        if (statusF) filtered = filtered.filter(r => String(r.status || '').toLowerCase() === statusF);
+
+        filtered.sort((x, y) => String(x.empName).localeCompare(String(y.empName))
+            || String(x.projName).localeCompare(String(y.projName)));
+
+        const body = filtered.length ? filtered.map(r => {
+            const a = r.a;
+            return `<tr>
+                <td>
+                    <div class="rm-list-name">${escapeHtml(r.empName)}</div>
+                    ${r.dept ? `<div class="rm-list-meta">${escapeHtml(r.dept)}</div>` : ''}
+                </td>
+                <td>${escapeHtml(r.projName)}</td>
+                <td>${escapeHtml(r.role || '—')}</td>
+                <td><strong>${a.allocation_pct}%</strong></td>
+                <td>${a.start_date || '—'}</td>
+                <td>${a.end_date || '—'}</td>
+                <td><span class="rm-pill">${escapeHtml(a.status || '—')}</span></td>
+                <td><button type="button" class="rm-link" onclick="App.releaseApiAllocation('${escapeHtml(a.id)}')">Release</button></td>
+            </tr>`;
+        }).join('') : `<tr><td colspan="8" class="rm-empty">${filtersOn ? 'No allocations match filters.' : 'No FTE allocations yet. Add a project, then Allocate.'}</td></tr>`;
+
+        return `
+        <div class="rm-toolbar rm-emp-filters rm-alloc-list-filters">
+            <input class="rm-search rm-alloc-list-search" type="search" placeholder="Search employee, project, role…"
+                value="${escapeHtml(AppState.resourceAllocListFilter || '')}"
+                oninput="App.setResourceAllocListFilter(this.value)" />
+            <select class="rm-select" aria-label="Filter by project" onchange="App.setResourceAllocListProjectFilter(this.value)">
+                <option value="">All projects</option>
+                ${projects.map(([id, name]) => `<option value="${escapeHtml(id)}" ${projectF === id ? 'selected' : ''}>${escapeHtml(name)}</option>`).join('')}
+            </select>
+            <select class="rm-select" aria-label="Filter by department" onchange="App.setResourceAllocListDeptFilter(this.value)">
+                <option value="">All departments</option>
+                ${depts.map(d => `<option value="${escapeHtml(d)}" ${deptF === d.toLowerCase() ? 'selected' : ''}>${escapeHtml(d)}</option>`).join('')}
+            </select>
+            <select class="rm-select" aria-label="Filter by role" onchange="App.setResourceAllocListRoleFilter(this.value)">
+                <option value="">All roles</option>
+                ${roles.map(r => `<option value="${escapeHtml(r)}" ${roleF === r.toLowerCase() ? 'selected' : ''}>${escapeHtml(r)}</option>`).join('')}
+            </select>
+            <select class="rm-select" aria-label="Filter by status" onchange="App.setResourceAllocListStatusFilter(this.value)">
+                <option value="">All statuses</option>
+                ${statuses.map(s => `<option value="${escapeHtml(s)}" ${statusF === s.toLowerCase() ? 'selected' : ''}>${escapeHtml(s)}</option>`).join('')}
+            </select>
+            <button type="button" class="rm-proj-btn-ghost" ${filtersOn ? '' : 'disabled'} onclick="App.clearResourceAllocListFilters()">Reset</button>
+            <span class="rm-toolbar-meta">${filtered.length} of ${enriched.length}</span>
+            <button type="button" class="rm-proj-btn-primary" onclick="App.openAllocModal()">+ New allocation</button>
+        </div>
+        <div class="rm-table-wrap card-light">
+            <table class="rm-table">
+                <thead>
+                    <tr><th>Employee</th><th>Project</th><th>Role</th><th>FTE</th><th>Start</th><th>End</th><th>Status</th><th></th></tr>
+                </thead>
+                <tbody>${body}</tbody>
+            </table>
+        </div>`;
+    }
+
+    const rows = [];
+    roster.forEach(e => {
+        (e.assignments || []).forEach(a => {
+            rows.push({ emp: e, a });
+        });
+    });
+
+    let filteredSheet = rows;
+    if (q) {
+        filteredSheet = filteredSheet.filter(({ emp, a }) =>
+            String(emp.name || '').toLowerCase().includes(q)
+            || String(a.projectName || '').toLowerCase().includes(q)
+            || String(a.role || emp.roleFamily || '').toLowerCase().includes(q)
+            || String(emp.department || '').toLowerCase().includes(q));
+    }
+    if (deptF) {
+        filteredSheet = filteredSheet.filter(({ emp }) => String(emp.department || '').toLowerCase() === deptF);
+    }
+    if (roleF) {
+        filteredSheet = filteredSheet.filter(({ emp, a }) =>
+            String(a.role || emp.roleFamily || '').toLowerCase() === roleF);
+    }
+    if (statusF) {
+        filteredSheet = filteredSheet.filter(({ a }) => String(a.status || '').toLowerCase() === statusF);
+    }
+    filteredSheet.sort((x, y) => (x.emp.name || '').localeCompare(y.emp.name || ''));
+
+    const sheetDepts = [...new Set(rows.map(({ emp }) => emp.department).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+    const sheetRoles = [...new Set(rows.map(({ emp, a }) => a.role || emp.roleFamily).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+    const sheetStatuses = [...new Set(rows.map(({ a }) => a.status).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+
+    const body = filteredSheet.length ? filteredSheet.map(({ emp, a }) => {
+        const start = a.start && !isNaN(a.start.getTime())
+            ? a.start.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
+        const end = a.end && !isNaN(a.end.getTime())
+            ? a.end.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
+        return `
+        <tr>
+            <td>${escapeHtml(emp.name)}</td>
+            <td><button type="button" class="rm-link" onclick="App.handleCardClick('${escapeHtml(a.projectId)}')">${escapeHtml(a.projectName)}</button></td>
+            <td>${escapeHtml(a.role || emp.roleFamily)}</td>
+            <td>${start}</td>
+            <td>${end}</td>
+            <td>${escapeHtml(statusLabel(a.status) || a.status || '—')}</td>
+        </tr>`;
+    }).join('') : `<tr><td colspan="6" class="rm-empty">${filtersOn ? 'No allocations match filters.' : 'No active allocations matched from delivery data. Start the Resource API for FTE allocate/release.'}</td></tr>`;
+
+    return `
+    <p class="rm-hint">Sheet mode — derived from delivery assignees. Start Resource API (:8090) for formal FTE %.</p>
+    <div class="rm-toolbar rm-emp-filters rm-alloc-list-filters">
+        <input class="rm-search rm-alloc-list-search" type="search" placeholder="Search employee, project, role…"
+            value="${escapeHtml(AppState.resourceAllocListFilter || '')}"
+            oninput="App.setResourceAllocListFilter(this.value)" />
+        <select class="rm-select" aria-label="Filter by department" onchange="App.setResourceAllocListDeptFilter(this.value)">
+            <option value="">All departments</option>
+            ${sheetDepts.map(d => `<option value="${escapeHtml(d)}" ${deptF === String(d).toLowerCase() ? 'selected' : ''}>${escapeHtml(d)}</option>`).join('')}
+        </select>
+        <select class="rm-select" aria-label="Filter by role" onchange="App.setResourceAllocListRoleFilter(this.value)">
+            <option value="">All roles</option>
+            ${sheetRoles.map(r => `<option value="${escapeHtml(r)}" ${roleF === String(r).toLowerCase() ? 'selected' : ''}>${escapeHtml(r)}</option>`).join('')}
+        </select>
+        <select class="rm-select" aria-label="Filter by status" onchange="App.setResourceAllocListStatusFilter(this.value)">
+            <option value="">All statuses</option>
+            ${sheetStatuses.map(s => `<option value="${escapeHtml(s)}" ${statusF === String(s).toLowerCase() ? 'selected' : ''}>${escapeHtml(s)}</option>`).join('')}
+        </select>
+        <button type="button" class="rm-proj-btn-ghost" ${filtersOn ? '' : 'disabled'} onclick="App.clearResourceAllocListFilters()">Reset</button>
+        <span class="rm-toolbar-meta">${filteredSheet.length} of ${rows.length}</span>
+    </div>
+    <div class="rm-table-wrap card-light">
+        <table class="rm-table">
+            <thead>
+                <tr><th>Employee</th><th>Project</th><th>Role</th><th>Start</th><th>End</th><th>Status</th></tr>
+            </thead>
+            <tbody>${body}</tbody>
+        </table>
+    </div>`;
+}
+
+function renderRmBenchTab(roster, apiOnline) {
+    const bench = apiOnline && (AppState.resourceApiEmployees || []).length
+        ? (AppState.resourceApiEmployees || []).filter(e => isRmProjectStaffable(e) && (
+            (e.utilization_pct || 0) <= 0
+            || /bench|available/i.test(e.availability_status || '')
+        ) && !/leadership/i.test(e.availability_status || ''))
+        : roster.filter(e => e.availability === 'Bench' && isRmProjectStaffable(e));
+
+    const recoPack = AppState.resourceBenchRecos;
+    const recoByEmp = {};
+    ((recoPack && recoPack.employees) || []).forEach(r => {
+        recoByEmp[r.employee_id] = r.suggestions || [];
+    });
+
+    const benchRows = bench.length ? bench.map(e => {
+        const name = e.full_name || e.name;
+        const id = e.id;
+        const dept = e.department || '—';
+        const desig = e.designation || '—';
+        const suggestions = recoByEmp[id] || [];
+        const sugHtml = suggestions.slice(0, 3).map(s => `
+            <div class="rm-reco">
+                <button type="button" class="rm-link" onclick="App.handleCardClick('${escapeHtml(s.project_external_id)}')">${escapeHtml(s.name)}</button>
+                <span class="rm-list-meta">score ${s.score} · ${(s.reasons || []).slice(0, 2).map(escapeHtml).join(', ')}</span>
+                ${apiOnline ? `<button type="button" class="rm-link" onclick="App.allocateFromRecommendation('${escapeHtml(id)}','${escapeHtml(s.project_external_id)}')">Allocate</button>` : ''}
+            </div>`).join('');
+        return `
+        <div class="rm-bench-card card-light">
+            <div class="rm-list-row">
+                <div class="rm-avatar" style="background:${stringToColor(name)}">${getInitials(name)}</div>
+                <div class="rm-list-main">
+                    <div class="rm-list-name">${escapeHtml(name)}</div>
+                    <div class="rm-list-meta">${escapeHtml(dept)} · ${escapeHtml(desig)}</div>
+                </div>
+                ${apiOnline ? `<button type="button" class="rm-link" onclick="App.openAllocModal('${escapeHtml(id)}')">Allocate</button>` : ''}
+            </div>
+            ${sugHtml ? `<div class="rm-reco-list"><div class="rm-list-meta" style="margin-bottom:6px;">Recommended next projects</div>${sugHtml}</div>` : ''}
+        </div>`;
+    }).join('') : `<div class="rm-empty">Nobody on bench.</div>`;
+
+    const attention = (AppState.attentionRanked || []).slice(0, 8);
+    const recRows = attention.length ? attention.map(p => {
+        const m = typeof attentionTierMeta === 'function' ? attentionTierMeta(p.attentionTier) : { color: '#b45309', bg: 'rgba(249,171,0,0.1)' };
+        return `
+        <div class="rm-list-row rm-list-row--click" onclick="App.handleCardClick('${p.id}')">
+            <div class="rm-list-main">
+                <div class="rm-list-name">${escapeHtml(p.name)}</div>
+                <div class="rm-list-meta">${escapeHtml(p.stage)} · ${escapeHtml((p.attentionReasons || [])[0] || 'Needs staffing attention')}</div>
+            </div>
+            <span class="rm-pill" style="background:${m.bg};color:${m.color}">${escapeHtml(p.attentionTier || 'risk')}</span>
+        </div>`;
+    }).join('') : `<div class="rm-empty">No high-attention projects right now.</div>`;
+
+    return `
+    <div class="rm-two-col">
+        <div>
+            <h3 class="rm-card-title">Available for new work (${bench.length})</h3>
+            <div class="rm-bench-grid">${benchRows}</div>
+        </div>
+        <div class="card-light rm-card">
+            <h3 class="rm-card-title">Projects needing support</h3>
+            <p class="rm-hint" style="margin-top:0;">From Attention scores (delivery).</p>
+            <div class="rm-list">${recRows}</div>
+        </div>
+    </div>`;
+}
+
+function renderRmReportsTab(roster, summary, apiOnline) {
+    const deptLines = Object.entries(summary.byDepartment || {})
+        .sort((a, b) => b[1] - a[1])
+        .map(([d, n]) => `${d}: ${n}`).join('\n');
+
+    const apiBtns = apiOnline ? `
+        <button type="button" class="streak-pd-action-btn" onclick="App.downloadResourceApiReport('utilization')">API utilization CSV</button>
+        <button type="button" class="streak-pd-action-btn" onclick="App.downloadResourceApiReport('bench')">API bench CSV</button>
+        <button type="button" class="streak-pd-action-btn" onclick="App.downloadResourceApiReport('allocations')">API allocations CSV</button>
+        <button type="button" class="streak-pd-action-btn" onclick="App.downloadResourceApiReport('allocation-history')">API history CSV</button>
+        <button type="button" class="streak-pd-action-btn" onclick="App.downloadResourceApiReport('skill-matrix')">Skill / designation CSV</button>
+        <button type="button" class="streak-pd-action-btn" onclick="App.downloadResourceApiReport('department')">Department CSV</button>
+        <button type="button" class="streak-pd-action-btn" onclick="App.downloadResourceApiReport('project-staffing')">Project staffing CSV</button>
+        <button type="button" class="streak-pd-action-btn" onclick="App.downloadResourceApiReport('demand-forecast')">Demand forecast CSV</button>
+    ` : `<p class="rm-hint">Start Resource API for full report suite.</p>`;
+
+    const demand = AppState.resourceDemandForecast || [];
+    const demandPre = demand.map(d => `${d.month}: ${d.projects} projects, ~${d.heads_needed_est} heads`).join('\n');
+
+    return `
+    <div class="rm-report-grid">
+        <div class="card-light rm-card">
+            <h3 class="rm-card-title">Utilization snapshot</h3>
+            <p class="rm-report-body">${summary.allocated} on projects · ${summary.bench} bench · avg util ${summary.avgUtil}%</p>
+            <button type="button" class="streak-pd-action-btn" onclick="App.exportResourceRosterCsv('all')">Export sheet roster CSV</button>
+        </div>
+        <div class="card-light rm-card">
+            <h3 class="rm-card-title">Bench report</h3>
+            <p class="rm-report-body">${summary.bench} people available / bench.</p>
+            <button type="button" class="streak-pd-action-btn" onclick="App.exportResourceRosterCsv('bench')">Export sheet bench CSV</button>
+        </div>
+        <div class="card-light rm-card">
+            <h3 class="rm-card-title">Department allocation</h3>
+            <pre class="rm-report-pre">${escapeHtml(deptLines || '—')}</pre>
+        </div>
+        <div class="card-light rm-card">
+            <h3 class="rm-card-title">API reports</h3>
+            <div class="rm-report-actions">${apiBtns}</div>
+        </div>
+        <div class="card-light rm-card">
+            <h3 class="rm-card-title">Demand forecast</h3>
+            <pre class="rm-report-pre">${escapeHtml(demandPre || 'Sync API to compute release-month demand.')}</pre>
+        </div>
+        <div class="card-light rm-card">
+            <h3 class="rm-card-title">Skill / designation</h3>
+            <p class="rm-report-body">Designation counts from sheet; skills via API when added on employee profiles.</p>
+            <button type="button" class="streak-pd-action-btn" onclick="App.exportResourceRosterCsv('designation')">Export by designation CSV</button>
+        </div>
+    </div>`;
+}
+
+function renderResourcesDelivery() {
     const resMap    = AppState.resourceMap;
     const people    = Object.values(resMap).sort((a, b) => b.activeCount - a.activeCount);
     const today     = new Date(); today.setHours(0,0,0,0);
@@ -1634,13 +3464,15 @@ function renderResources() {
     }).join('');
 
     /* ── A. Conflict Alerts ── */
+    const CONFLICT_PREVIEW = 2; // show first N pairs; rest behind Shrink / Show more
     const conflicted = people.filter(p => p.conflicts.length > 0);
     let conflictHTML = '';
     if (conflicted.length) {
-        conflictHTML = `<div class="res-conflict-grid">` + conflicted.map(p => {
+        conflictHTML = `<div class="res-conflict-grid">` + conflicted.map((p, pi) => {
             const init = getInitials(p.name);
             const avc  = stringToColor(p.name);
-            const overlapItems = p.conflicts.map(c => {
+            const cardId = `res-cfl-${pi}`;
+            const renderPair = (c) => {
                 const oStart = c.overlapStart ? fmtDate(c.overlapStart) : '—';
                 const oEnd   = c.overlapEnd   ? fmtDate(c.overlapEnd)   : '—';
                 return `
@@ -1665,9 +3497,20 @@ function renderResources() {
                         </div>
                     </div>
                 </div>`;
-            }).join('');
+            };
+            const preview = p.conflicts.slice(0, CONFLICT_PREVIEW).map(renderPair).join('');
+            const rest = p.conflicts.slice(CONFLICT_PREVIEW);
+            const moreBlock = rest.length
+                ? `<div class="res-cfl-more" id="${cardId}-more" hidden>${rest.map(renderPair).join('')}</div>
+                   <button type="button" class="res-cfl-toggle" id="${cardId}-btn"
+                     onclick="App.toggleConflictCard('${cardId}', ${rest.length})"
+                     aria-expanded="false">
+                     <span class="res-cfl-toggle__more">Show ${rest.length} more</span>
+                     <span class="res-cfl-toggle__less">Shrink</span>
+                   </button>`
+                : '';
             return `
-            <div class="res-conflict-card">
+            <div class="res-conflict-card" id="${cardId}">
                 <div class="res-conflict-header">
                     <div class="res-conflict-avatar" style="background:${avc}">${init}</div>
                     <div>
@@ -1678,7 +3521,8 @@ function renderResources() {
                         ? `<div class="res-cfl-free-from">free ${p.freeFrom <= today ? 'now' : fmtDate(p.freeFrom)}</div>`
                         : p.activeCount > 0 ? `<div class="res-cfl-free-from">release TBD</div>` : ''}
                 </div>
-                ${overlapItems}
+                ${preview}
+                ${moreBlock}
             </div>`;
         }).join('') + `</div>`;
     }
@@ -1737,7 +3581,7 @@ function renderResources() {
                 <div class="res-proj-meta">
                     <div class="res-proj-top">
                         <span class="res-proj-name" onclick="App.handleCardClick('${a.projectId}')">${escapeHtml(a.projectName)}</span>
-                        ${isConflict && !a.completed ? `<span class="res-proj-conflict-badge">⚠ conflict</span>` : ''}
+                        ${isConflict && !a.completed ? `<span class="res-proj-conflict-badge"><span class="ui-inline-icon">${Icons.alert}</span> conflict</span>` : ''}
                         ${a.completed ? `<span class="res-proj-done-badge">✓ live</span>` : ''}
                     </div>
                     <div class="res-proj-bottom">
@@ -1770,7 +3614,7 @@ function renderResources() {
                         <span>${p.activeCount} active project${p.activeCount !== 1 ? 's' : ''}</span>
                         <span class="res-person-sep">·</span>
                         <span>${sorted.filter(a => a.completed).length} completed</span>
-                        ${hasConflict ? `<span class="res-person-sep">·</span><span style="color:#D93025;font-weight:700;">⚠ ${p.conflicts.length} conflict${p.conflicts.length > 1 ? 's' : ''}</span>` : ''}
+                        ${hasConflict ? `<span class="res-person-sep">·</span><span style="color:#D93025;font-weight:700;display:inline-flex;align-items:center;gap:4px;"><span class="ui-inline-icon">${Icons.alert}</span>${p.conflicts.length} conflict${p.conflicts.length > 1 ? 's' : ''}</span>` : ''}
                     </div>
                 </div>
                 <div style="display:flex; align-items:center; gap:8px; flex-shrink:0;">
@@ -1804,8 +3648,9 @@ function renderResources() {
 
     let suggestHTML = '';
     if (unassigned.length) {
+        const workRole = typeof getPrimaryWorkRole === 'function' ? getPrimaryWorkRole() : 'Developer';
         const devPeople = people.filter(p =>
-            p.assignments.some(a => a.role === 'Developer')
+            p.assignments.some(a => a.role === workRole)
         ).sort((a, b) => {
             if (a.activeCount !== b.activeCount) return a.activeCount - b.activeCount;
             const aReady = a.activeCount === 0 || (a.freeFrom && a.freeFrom <= today);
@@ -1853,7 +3698,7 @@ function renderResources() {
     if (intelligenceEnabled()) {
         const cap = AppState.capacityForecast;
         const roles = cap.roles || {};
-        const intelRoles = ['Developer', 'QA', 'BA'];
+        const intelRoles = typeof getIntelRoles === 'function' ? getIntelRoles() : ['Developer', 'QA', 'BA'];
         capacityMiniHTML = `
         <section class="res-section">
             <h3 class="res-section__title">Capacity forecast (30 / 60 / 90 days)</h3>
@@ -1885,7 +3730,7 @@ function renderResources() {
                 <div style="font-size:13px;color:var(--text-muted);">${people.length} people · ${AppState.allProjects.filter(p=>normalizeStage(p.stage||'')!=='Live').length} active projects${intelligenceEnabled() ? ' · projected ends when forecast available' : ''}</div>
             </div>
             ${conflictCount
-                ? `<div style="background:rgba(217,48,37,0.1);border:1px solid rgba(217,48,37,0.3);border-radius:12px;padding:8px 16px;font-size:13px;font-weight:700;color:#D93025;">⚠ ${conflictCount} scheduling conflict${conflictCount>1?'s':''} detected</div>`
+                ? `<div style="background:rgba(217,48,37,0.1);border:1px solid rgba(217,48,37,0.3);border-radius:12px;padding:8px 16px;font-size:13px;font-weight:700;color:#D93025;display:inline-flex;align-items:center;gap:8px;"><span class="ui-inline-icon">${Icons.alert}</span>${conflictCount} scheduling conflict${conflictCount>1?'s':''} detected</div>`
                 : `<div style="background:rgba(30,142,62,0.1);border:1px solid rgba(30,142,62,0.2);border-radius:12px;padding:8px 16px;font-size:13px;font-weight:700;color:#1E8E3E;">✓ No conflicts detected</div>`}
         </div>
 
@@ -1898,7 +3743,7 @@ function renderResources() {
 
         ${conflictCount ? `
         <section class="res-section">
-            <h3 class="res-section__title">⚠ Scheduling Conflicts</h3>
+            <h3 class="res-section__title">${sectionTitleWithIcon(Icons.alert, 'Scheduling Conflicts')}</h3>
             ${conflictHTML}
         </section>` : ''}
 
@@ -2025,7 +3870,7 @@ function renderTimeline(projects) {
         // Fix 6: show "outside window" hint for fully invisible bars
         const outOfRange = !inRange && (safeEnd < startRange || safeStart > endRange);
         const rangeHint  = outOfRange
-            ? `<span style="font-size:10px;color:var(--text-muted);padding-left:8px;">📅 ${safeStart < startRange ? 'before' : 'after'} window</span>`
+            ? `<span style="font-size:10px;color:var(--text-muted);padding-left:8px;display:inline-flex;align-items:center;gap:4px;"><span class="ui-inline-icon">${Icons.calendar}</span>${safeStart < startRange ? 'before' : 'after'} window</span>`
             : '';
 
         const isLive = normalizeStage(p.stage || '') === 'Live';
@@ -2146,7 +3991,7 @@ function renderTimelineCalendar(projects) {
             ].slice(0,4).join('');
 
             const tooltip = dayEvts.map(e =>
-                `${e.type === 'live' ? '🟢' : e.type === 'release' ? '🔴' : '🔵'} ${e.project.name}`
+                `${e.type === 'live' ? 'Live' : e.type === 'release' ? 'Release' : 'Start'} · ${e.project.name}`
             ).join('&#10;');
 
             const clickAttr = hasEvt
@@ -2424,6 +4269,7 @@ function renderAnalytics() {
     const FLOW_COLORS = {
         'Planning':'#A78BFA', 'Content':'#A78BFA', 'Story Req':'#818CF8',
         'UI Dev':'#60A5FA', 'Streak Dev':'#3B82F6', 'Streak QA':'#34D399', 'Live':'#10B981',
+        'Brief':'#A78BFA', 'Design':'#60A5FA', 'Review':'#34D399', 'Publish':'#10B981',
     };
 
     const heatRows = heatmap.map(s => {
@@ -2449,12 +4295,12 @@ function renderAnalytics() {
     }).join('');
 
     const heatmapHTML = `
-    <div class="an-section card-light">
+    <div class="an-section card-light${!heatRows ? ' an-section--empty' : ''}">
         <div class="an-section-header">
             <div class="an-section-title">Stage Heatmap</div>
             <div class="an-section-sub">Predictive benchmark · avg days per stage from all live + active ${unitPlur}</div>
         </div>
-        <div class="an-heat-list">${heatRows || '<div style="padding:20px;color:var(--text-muted);font-size:13px;">No stage transition dates found in sibling sheets.</div>'}</div>
+        <div class="an-heat-list">${heatRows || `<div class="an-empty-compact">${(typeof isClickUpWorkspace === 'function' && isClickUpWorkspace(AppState?.activeWorkspace)) ? 'No stage duration dates found. Add start/due/closed dates on ClickUp tasks and subtasks.' : 'No stage transition dates found in sibling sheets.'}</div>`}</div>
         <div class="an-heat-hint">avg Nd = learned from real dates · includes ongoing time for active ${unitPlur} · red = avg &gt;21 days</div>
     </div>`;
 
@@ -2535,8 +4381,9 @@ function renderAnalytics() {
         ? AiInsights.predictiveShellHtml('ai-predictive-insights')
         : '';
 
+    const predEmpty = !atRisk.length && !onTrack.length;
     const predictiveHTML = `
-    <div class="an-section card-light an-section--predictive">
+    <div class="an-section card-light an-section--predictive${predEmpty ? ' an-section--empty' : ''}">
         <div class="an-section-header">
             <div class="an-section-title">Predictive Completion</div>
             <div class="an-section-sub">Velocity forecast from progress rate · projected vs target · same math as Alerts → Likely miss</div>
@@ -2544,7 +4391,7 @@ function renderAnalytics() {
         ${aiPredictiveShell}
         ${atRisk.length ? `<div class="an-pred-group-label an-pred-group-label--risk">Will likely miss deadline</div>${predRows(atRisk, '')}` : ''}
         ${onTrack.length ? `<div class="an-pred-group-label an-pred-group-label--ok">On track to hit deadline</div>${predRows(onTrack, '')}` : ''}
-        ${!atRisk.length && !onTrack.length ? `<div class="an-pred-empty">Not enough progress data to predict. Add start_date, release_date and progress values.</div>` : ''}
+        ${predEmpty ? `<div class="an-pred-empty an-empty-compact">Not enough progress data to predict. Add start_date, release_date and progress values.</div>` : ''}
     </div>`;
 
     /* ── Section 6: Team Efficiency Leaderboards ── */
@@ -2596,7 +4443,7 @@ function renderAnalytics() {
             </div>
             <div class="an-lb-badge an-lb-badge--blue">${avg}% avg</div>
         </div>`;
-    }).join('') : '<div class="an-lb-empty">No developer data.</div>';
+    }).join('') : `<div class="an-lb-empty">No ${(typeof isContentCreatorWorkspace === 'function' && isContentCreatorWorkspace()) ? 'content creator' : 'developer'} data.</div>`;
 
     const leaderboardHTML = `
     <div class="an-lb-grid">
@@ -2616,8 +4463,8 @@ function renderAnalytics() {
         </div>
         <div class="an-section card-light">
             <div class="an-section-header">
-                <div class="an-section-title">Developer Velocity</div>
-                <div class="an-section-sub">Avg progress on active projects</div>
+                <div class="an-section-title">${(typeof isContentCreatorWorkspace === 'function' && isContentCreatorWorkspace()) ? 'Content Creator Velocity' : 'Developer Velocity'}</div>
+                <div class="an-section-sub">Avg progress on active ${(typeof isContentCreatorWorkspace === 'function' && isContentCreatorWorkspace()) ? 'campaigns' : 'projects'}</div>
             </div>
             ${devRows}
         </div>
@@ -3148,21 +4995,35 @@ function computeMetricsFromMaster(p) {
     const totalRows = Math.max(0, parseInt(String(p.total_pages ?? 0), 10) || 0);
     const done = Math.max(0, parseInt(String(p.completed_pages ?? 0), 10) || 0);
     const st = normalizeStage(p.stage || '');
+    const funnel = p.funnelStage || (typeof projectFunnelStage === 'function' ? projectFunnelStage(p) : st);
     const total = totalRows > 0 ? totalRows : 1;
-    const live = Math.min(done, total);
-    const pending = ['Backlog', 'Planning'].includes(st) ? Math.min(1, Math.max(total - live, 0) || 1) : 0;
+    // ClickUp tasks often have completed_pages=0 even when status is Live — trust stage.
+    let live = Math.min(done, total);
+    if ((st === 'Live' || funnel === 'Live') && live < 1) live = Math.min(1, total);
+    const pendingStages = ['Backlog', 'Planning', 'Brief'];
+    const pending = (pendingStages.includes(st) || pendingStages.includes(funnel))
+        ? Math.min(1, Math.max(total - live, 0) || (live ? 0 : 1))
+        : 0;
     const inprog = Math.max(0, total - live - pending);
 
     return {
         total,
-        live: live || (st === 'Live' ? 1 : 0),
+        live,
         inprog,
         pending,
         avgPct: projectDisplayProgress(p),
     };
 }
 
-function buildRoadmapLegendHTML() {
+function buildRoadmapLegendHTML(opts = {}) {
+    if (opts.clickup) {
+        return `
+    <div class="streak-roadmap-legend" aria-hidden="true">
+        <span><i class="streak-leg streak-leg--live"></i> Live</span>
+        <span><i class="streak-leg streak-leg--dev"></i> In progress</span>
+        <span><i class="streak-leg streak-leg--design"></i> Brief / plan</span>
+    </div>`;
+    }
     return `
     <div class="streak-roadmap-legend" aria-hidden="true">
         <span><i class="streak-leg streak-leg--live"></i> Ship / live</span>
@@ -3295,6 +5156,7 @@ function renderClickUpDeliverablesTableHTML(pages) {
     }
     const tbody = pages.map((pg, i) => {
         const pct = pg.progress || 0;
+        const stageLabel = pg.funnelStage || pg.rawStage || pg.stage || '—';
         const normalized = normalizeStage(pg.stage || '');
         const bar = `
             <div class="streak-roadmap-progress">
@@ -3303,7 +5165,7 @@ function renderClickUpDeliverablesTableHTML(pages) {
                 </div>
                 <span class="streak-roadmap-progress-pct">${pct}%</span>
             </div>`;
-        const stPill = `<span class="stage-pill streak-roadmap-stage ${stageClass(normalized)}">${escapeHtml(pg.rawStage || pg.stage || '—')}</span>`;
+        const stPill = `<span class="stage-pill streak-roadmap-stage ${stageClass(normalized)}">${escapeHtml(stageLabel)}</span>`;
         const stat = pg.status
             ? `<span class="status-badge streak-roadmap-status ${siblingStatusKeyFromValue(pg.status)}">${escapeHtml(pg.status)}</span>`
             : '<span class="streak-roadmap-dash">—</span>';
@@ -3431,31 +5293,51 @@ function buildClickUpAsidePanels(p, detail, pages) {
 }
 
 function buildClickUpTaskSnapshot(p, detail) {
+    const stageLabel = p.funnelStage
+        || (typeof projectFunnelStage === 'function' ? projectFunnelStage(p) : null)
+        || p.rawStage
+        || p.stage
+        || '—';
+    const rawHint = (p.rawStage && String(p.rawStage).toLowerCase() !== String(stageLabel).toLowerCase())
+        ? ` (${p.rawStage})`
+        : '';
+    const creatorMode = typeof isContentCreatorWorkspace === 'function' && isContentCreatorWorkspace();
+    const peopleLabel = creatorMode
+        ? ((typeof getContentCreatorRoleName === 'function' ? getContentCreatorRoleName() : 'Content Creator'))
+        : 'Owner';
+    const peopleValue = creatorMode
+        ? (p.developer && p.developer !== 'Unassigned' ? p.developer : (p.owner || '—'))
+        : (p.owner || '—');
+
     const fields = [
         { label: 'Task ID', value: p.id },
         { label: 'Client', value: p.client || '—' },
-        { label: 'Stage', value: p.stage || '—' },
+        { label: 'Stage', value: `${stageLabel}${rawHint}` },
         { label: 'Status', value: statusLabel(p.status) },
         { label: 'Progress', value: `${projectDisplayProgress(p)}%` },
         { label: 'Due date', value: p.release_date ? formatDate(p.release_date) : '—' },
-        { label: 'Owner', value: p.owner || '—' },
-    ];
+        { label: peopleLabel, value: peopleValue },
+    ].filter(f => f.value && f.value !== '—');
+
     const cells = fields.map(f => `
-        <div class="streak-snapshot-cell">
+        <div class="streak-snapshot-field">
             <div class="streak-snapshot-label">${escapeHtml(f.label)}</div>
             <div class="streak-snapshot-value">${escapeHtml(f.value)}</div>
         </div>`).join('');
+
     let extra = '';
     if (detail.description || p.notes) {
-        extra += `<div class="streak-pd-devtrack-notes" style="margin-top:16px;">${escapeHtml(detail.description || p.notes)}</div>`;
+        extra += `<div class="streak-pd-devtrack-notes streak-snapshot-notes">${escapeHtml(detail.description || p.notes)}</div>`;
     }
-    if (detail.url) {
-        extra += `<p style="margin-top:12px;"><a href="${escapeHtml(detail.url)}" target="_blank" rel="noopener">Open in ClickUp ↗</a></p>`;
-    }
+
     return `
-    <div class="streak-snapshot-grid">${cells}</div>
-    ${extra}
-    <p class="streak-snapshot-hint">Add subtasks in ClickUp to unlock deliverable-level funnel and analytics.</p>`;
+    <div class="streak-snapshot-block">
+        <div class="streak-snapshot-grid">${cells}</div>
+        ${extra}
+        <div class="streak-snapshot-footer">
+            <p class="streak-snapshot-hint">Add subtasks in ClickUp to unlock deliverable-level funnel and analytics.</p>
+        </div>
+    </div>`;
 }
 
 /**
@@ -3541,6 +5423,9 @@ function buildProjectPageViewModel(p, siblingResult) {
         roadmapInner = siblingWarning + roadmapInner;
     }
 
+    const isClickUp = !!(siblingResult.clickup
+        || (typeof isClickUpWorkspace === 'function' && isClickUpWorkspace(AppState?.activeWorkspace)));
+
     return {
         rel,
         roadmapInner,
@@ -3555,6 +5440,8 @@ function buildProjectPageViewModel(p, siblingResult) {
         siblingWarning,
         classicSibling,
         masterProgress: projectDisplayProgress(p),
+        isClickUp,
+        clickupUrl: siblingResult.url || p.clickupMeta?.url || '',
     };
 }
 
@@ -3565,6 +5452,40 @@ function renderProjectPageDevtrack(p, vm) {
             <div class="streak-pd-metric__value">${escapeHtml(String(value))}</div>
             ${sub ? `<div class="streak-pd-metric__sub">${sub}</div>` : ''}
         </div>`;
+
+    const clickUp = !!vm.isClickUp;
+    const hasRows = !!vm.hasRoadmapRows;
+    const metrics = clickUp
+        ? [
+            metricCard(hasRows ? 'Deliverables' : 'Tasks', vm.kTotal, hasRows ? 'subtasks on this campaign' : 'this ClickUp task'),
+            metricCard('Live', vm.kLive, 'completed / live'),
+            metricCard('In progress', vm.kProg, 'active delivery'),
+            metricCard('Pending', vm.kPend, 'brief & planning'),
+            metricCard('Progress', `${hasRows ? vm.kAvg : vm.masterProgress}%`, hasRows ? 'avg from deliverables' : 'task progress'),
+        ].join('')
+        : [
+            metricCard('Total pages', vm.kTotal, 'rows in roadmap'),
+            metricCard('Pages live', vm.kLive, 'stage at Live'),
+            metricCard('In progress', vm.kProg, 'active delivery'),
+            metricCard('Pending / plan', vm.kPend, 'backlog & planning'),
+            metricCard('Delivery progress', `${hasRows ? vm.kAvg : vm.masterProgress}%`, hasRows ? 'avg from roadmap rows' : 'master project %'),
+        ].join('');
+
+    const roadmapTitle = clickUp
+        ? (hasRows ? 'Deliverables' : 'Campaign details')
+        : 'Development roadmap';
+    const roadmapSub = clickUp
+        ? (hasRows
+            ? 'Select a deliverable to update the details panel.'
+            : 'Overview of this ClickUp task. Add subtasks for a deliverable table.')
+        : 'Select a row to update the page details panel.';
+    const legend = hasRows || !clickUp ? buildRoadmapLegendHTML({ clickup: clickUp }) : '';
+    const openClickUp = clickUp && vm.clickupUrl
+        ? `<a class="streak-pd-action-btn" href="${escapeHtml(vm.clickupUrl)}" target="_blank" rel="noopener" title="Open in ClickUp">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                        Open in ClickUp
+                    </a>`
+        : '';
 
     return `
     <div class="streak-project-page streak-project-page--devtrack">
@@ -3580,7 +5501,8 @@ function renderProjectPageDevtrack(p, vm) {
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
                         Copy link
                     </button>
-                    ${CONFIG.SHEET_CSV_URL ? `<a class="streak-pd-action-btn" href="${CONFIG.SHEET_CSV_URL.replace(/pub\?output=csv.*/, 'edit')}" target="_blank" rel="noopener" title="Open source sheet">
+                    ${openClickUp}
+                    ${!clickUp && CONFIG.SHEET_CSV_URL ? `<a class="streak-pd-action-btn" href="${CONFIG.SHEET_CSV_URL.replace(/pub\?output=csv.*/, 'edit')}" target="_blank" rel="noopener" title="Open source sheet">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
                         Open in Sheets
                     </a>` : ''}
@@ -3591,13 +5513,7 @@ function renderProjectPageDevtrack(p, vm) {
                 <p class="streak-pd-devtrack-hi">Projects <span class="streak-pd-devtrack-sep">/</span> ${escapeHtml(p.id)}</p>
                 <h1 class="streak-pd-devtrack-title">${escapeHtml(p.name)}</h1>
                 <p class="streak-pd-devtrack-sub">${escapeHtml(p.client || '—')} · ${escapeHtml(vm.oneSentence)}</p>
-                <div class="streak-pd-metrics">
-                    ${metricCard('Total pages', vm.kTotal, 'rows in roadmap')}
-                    ${metricCard('Pages live', vm.kLive, 'stage at Live')}
-                    ${metricCard('In progress', vm.kProg, 'active delivery')}
-                    ${metricCard('Pending / plan', vm.kPend, 'backlog & planning')}
-                    ${metricCard('Delivery progress', `${vm.hasRoadmapRows ? vm.kAvg : vm.masterProgress}%`, vm.hasRoadmapRows ? 'avg from roadmap rows' : 'master project %')}
-                </div>
+                <div class="streak-pd-metrics">${metrics}</div>
             </header>
 
             <div class="streak-pd-devtrack-split">
@@ -3605,17 +5521,17 @@ function renderProjectPageDevtrack(p, vm) {
                     <div class="streak-pd-roadmap-card">
                         <div class="streak-roadmap-card-head">
                             <div>
-                                <h2 id="roadmap-h" class="streak-roadmap-h">Development roadmap</h2>
-                                <p class="streak-roadmap-sub">Select a row to update the page details panel.</p>
+                                <h2 id="roadmap-h" class="streak-roadmap-h">${roadmapTitle}</h2>
+                                <p class="streak-roadmap-sub">${roadmapSub}</p>
                             </div>
-                            ${buildRoadmapLegendHTML()}
+                            ${legend}
                         </div>
-                        <div class="streak-roadmap-table-wrap">
+                        <div class="${hasRows ? 'streak-roadmap-table-wrap' : 'streak-roadmap-body'}">
                             ${vm.roadmapInner}
                         </div>
                     </div>
                 </section>
-                <aside class="streak-pd-detail-aside" aria-label="Page details">
+                <aside class="streak-pd-detail-aside" aria-label="${clickUp ? 'Task details' : 'Page details'}">
                     ${vm.asidePanels}
                 </aside>
             </div>
@@ -3852,8 +5768,11 @@ function renderIntelligence() {
     const sum = AppState.intelligenceSummary || {};
     const ranked = AppState.attentionRanked.slice(0, 12);
     const cap = AppState.capacityForecast;
-    const intake = AppState.intakeRecommendation;
+    const intake = AppState.intakeRecommendation || {};
     const resMap = AppState.resourceMap;
+    const creatorMode = typeof isContentCreatorWorkspace === 'function' && isContentCreatorWorkspace();
+    const primaryRole = typeof getPrimaryWorkRole === 'function' ? getPrimaryWorkRole() : 'Developer';
+    const intakeTiers = intake.tiers || {};
 
     const kpiTiles = [
         { 
@@ -3875,16 +5794,20 @@ function renderIntelligence() {
             cls: '' 
         },
         { 
-            label: 'New Small Project Slots', 
+            label: 'Safe Small Starts', 
             value: intake.small ?? 0, 
-            sub: 'For 1 developer over 30 days', 
-            cls: '' 
+            sub: creatorMode
+                ? `1 ${primaryRole} · 30-day campaign`
+                : '1 Developer · 30-day project', 
+            cls: (intake.small ?? 0) === 0 ? 'intel-kpi--muted' : '' 
         },
         { 
-            label: 'New Medium Project Slots', 
+            label: 'Safe Medium Starts', 
             value: intake.medium ?? 0, 
-            sub: 'For 2 devs + QA over 60 days', 
-            cls: '' 
+            sub: creatorMode
+                ? `2 ${primaryRole}s · 60-day campaign`
+                : '2 Devs + QA · 60-day project', 
+            cls: (intake.medium ?? 0) === 0 ? 'intel-kpi--muted' : '' 
         },
         { 
             label: 'Hiring Advisor', 
@@ -3917,11 +5840,11 @@ function renderIntelligence() {
             <div class="intel-attn-main" style="margin-left:4px;">
                 <div class="intel-attn-name" style="font-size:14px;font-weight:700;">${escapeHtml(p.name)}</div>
                 <div class="intel-attn-meta" style="font-size:11px;margin-top:2px;">Stage: <strong>${escapeHtml(p.stage)}</strong> &nbsp;·&nbsp; Lead: <strong>${escapeHtml(p.owner || '—')}</strong></div>
-                <div class="intel-attn-reasons" style="font-size:11px;color:#d93025;margin-top:4px;font-weight:500;">⚠️ ${escapeHtml(reasons)}</div>
+                <div class="intel-attn-reasons" style="font-size:11px;color:#d93025;margin-top:4px;font-weight:500;display:flex;align-items:flex-start;gap:6px;"><span class="ui-inline-icon" aria-hidden="true">${Icons.alert}</span><span>${escapeHtml(reasons)}</span></div>
             </div>
             <span class="intel-tier-pill" style="background:${m.bg};color:${m.color};border:1px solid ${m.color}40;font-size:10px;font-weight:700;padding:4px 8px;border-radius:8px;">${riskLabel}</span>
         </div>`;
-    }).join('') : `<div class="intel-empty">🎉 All active projects are running smoothly. No scored risks.</div>`;
+    }).join('') : `<div class="intel-empty intel-empty--ok"><span class="ui-inline-icon" aria-hidden="true">${Icons.checkCircle}</span> All active projects are running smoothly. No scored risks.</div>`;
 
     const releasePeople = (cap.summary?.freeingNext30 || []).slice(0, 10);
     const releaseHTML = releasePeople.length ? releasePeople.map(p => {
@@ -3943,7 +5866,7 @@ function renderIntelligence() {
     }).join('') : `<div class="intel-empty">Nobody is scheduled to roll off projects in the next 30 days.</div>`;
 
     const roles = cap.roles || {};
-    const intelRoles = ['Developer', 'QA', 'BA', 'Owner', 'Page owner'];
+    const intelRoles = typeof getIntelRoles === 'function' ? getIntelRoles() : ['Developer', 'QA', 'BA', 'Owner', 'Page owner'];
     const heatHTML = intelRoles.map(role => {
         const r = roles[role];
         if (!r || !r.weeks?.length) return '';
@@ -3977,21 +5900,42 @@ function renderIntelligence() {
         }).join('');
         return `
         <div class="intel-util-card card-light" style="padding:18px;border-radius:16px;">
-            <div class="intel-util-title" style="font-size:14px;font-weight:800;margin-bottom:14px;border-bottom:1px solid var(--border-light);padding-bottom:6px;">📈 Workload in ${days} days</div>
+            <div class="intel-util-title" style="font-size:14px;font-weight:800;margin-bottom:14px;border-bottom:1px solid var(--border-light);padding-bottom:6px;">${sectionTitleWithIcon(Icons.trendUp, `Workload in ${days} days`)}</div>
             ${bars}
         </div>`;
     }).join('');
 
-    const intakeCards = [
-        { key: 'small', label: 'Small Projects', desc: 'Needs 1 Developer · lasts 30 days' },
-        { key: 'medium', label: 'Medium Projects', desc: 'Needs 2 Devs + 1 QA · lasts 60 days' },
-        { key: 'large', label: 'Large Programs', desc: 'Needs full mixed team · lasts 90 days' },
-    ].map(c => `
-        <div class="intel-intake-card card-light" style="padding:20px;border-radius:16px;display:flex;flex-direction:column;justify-content:center;align-items:center;">
-            <div class="intel-intake-num" style="font-size:36px;font-weight:900;color:var(--accent, #1A73E8);line-height:1;">${intake[c.key] ?? 0}</div>
-            <div class="intel-intake-lbl" style="font-size:14px;font-weight:800;margin-top:8px;color:var(--text-primary);">${c.label}</div>
-            <div class="intel-intake-desc" style="font-size:11px;color:var(--text-muted);margin-top:4px;text-align:center;line-height:1.3;">${c.desc}</div>
-        </div>`).join('');
+    const intakeCardDefs = creatorMode
+        ? [
+            { key: 'small',  label: 'Small campaigns',  need: `1 ${primaryRole}`,  lasts: '30 days' },
+            { key: 'medium', label: 'Medium campaigns', need: `2 ${primaryRole}s`, lasts: '60 days' },
+            { key: 'large',  label: 'Large programs',   need: `3 ${primaryRole}s`, lasts: '90 days' },
+        ]
+        : [
+            { key: 'small',  label: 'Small projects',  need: '1 Developer',           lasts: '30 days' },
+            { key: 'medium', label: 'Medium projects', need: '2 Developers + 1 QA',  lasts: '60 days' },
+            { key: 'large',  label: 'Large programs',  need: 'Dev + QA + BA',         lasts: '90 days' },
+        ];
+
+    const intakeCards = intakeCardDefs.map(c => {
+        const tier = intakeTiers[c.key] || {};
+        const slots = intake[c.key] ?? tier.slots ?? 0;
+        const free = tier.minFree != null ? tier.minFree : null;
+        const heads = tier.heads || 1;
+        const days = tier.days || (c.key === 'large' ? 90 : c.key === 'medium' ? 60 : 30);
+        const tone = slots <= 0 ? 'zero' : slots === 1 ? 'tight' : 'ok';
+        const mathLine = free != null
+            ? `${free} free × ${days}d window ÷ ${heads} required = ${slots}`
+            : `${slots} slot${slots === 1 ? '' : 's'} available`;
+        return `
+        <div class="intel-intake-card intel-intake-card--${tone}">
+            <div class="intel-intake-num">${slots}</div>
+            <div class="intel-intake-lbl">${escapeHtml(c.label)}</div>
+            <div class="intel-intake-need">${escapeHtml(c.need)} · ${escapeHtml(c.lasts)}</div>
+            <div class="intel-intake-math">${escapeHtml(mathLine)}</div>
+            <div class="intel-intake-status">${slots <= 0 ? 'No safe capacity' : slots === 1 ? 'Limited capacity' : 'Open to start'}</div>
+        </div>`;
+    }).join('');
 
     const aiShell = (typeof AiInsights !== 'undefined' && featureOn('AI_INSIGHTS'))
         ? AiInsights.shellHtml('ai-intelligence-insights', 'Executive Summary Brief', 'AI recommendation narrative based on staffing, client load, and project timelines — numbers below are unchanged.')
@@ -4015,7 +5959,7 @@ function renderIntelligence() {
             <!-- Projects attention card -->
             <div class="intel-section card-light" style="border-radius:18px;padding:20px;">
                 <div class="intel-section-head" style="margin-bottom:16px;border-bottom:1px solid var(--border-light);padding-bottom:10px;">
-                    <h2 class="intel-section-title" style="font-size:16px;font-weight:800;color:var(--text-primary);">⚠️ Projects Needing Focus</h2>
+                    <h2 class="intel-section-title" style="font-size:16px;font-weight:800;color:var(--text-primary);">${sectionTitleWithIcon(Icons.alert, 'Projects Needing Focus')}</h2>
                     <span class="intel-section-sub" style="font-size:12px;line-height:1.4;color:var(--text-muted);margin-top:4px;display:block;">
                         These projects have high risk scores due to milestones slipping, resource constraints, or heavy backlogs.
                     </span>
@@ -4026,7 +5970,7 @@ function renderIntelligence() {
             <!-- Resource release card -->
             <div class="intel-section card-light" style="border-radius:18px;padding:20px;">
                 <div class="intel-section-head" style="margin-bottom:16px;border-bottom:1px solid var(--border-light);padding-bottom:10px;">
-                    <h2 class="intel-section-title" style="font-size:16px;font-weight:800;color:var(--text-primary);">👥 Team Rolling Off Soon (30d)</h2>
+                    <h2 class="intel-section-title" style="font-size:16px;font-weight:800;color:var(--text-primary);">${sectionTitleWithIcon(Icons.users, 'Team Rolling Off Soon (30d)')}</h2>
                     <span class="intel-section-sub" style="font-size:12px;line-height:1.4;color:var(--text-muted);margin-top:4px;display:block;">
                         These team members are finishing their current project commitments in the next 30 days and will be ready for new assignments.
                     </span>
@@ -4038,7 +5982,7 @@ function renderIntelligence() {
         <!-- Heatmap card -->
         <div class="intel-section card-light" style="margin-top:20px;border-radius:18px;padding:20px;">
             <div class="intel-section-head" style="margin-bottom:16px;border-bottom:1px solid var(--border-light);padding-bottom:10px;">
-                <h2 class="intel-section-title" style="font-size:16px;font-weight:800;color:var(--text-primary);">📅 Role Busy-ness Calendar (Availability Heatmap)</h2>
+                <h2 class="intel-section-title" style="font-size:16px;font-weight:800;color:var(--text-primary);">${sectionTitleWithIcon(Icons.calendar, 'Role Busy-ness Calendar')}</h2>
                 <span class="intel-section-sub" style="font-size:12px;line-height:1.4;color:var(--text-muted);margin-top:4px;display:block;">
                     Expected weekly workload for each role over the next 3 months. Hover over cells to see details.
                 </span>
@@ -4056,11 +6000,11 @@ function renderIntelligence() {
         <div class="intel-util-grid" style="margin-top:20px;">${utilHorizons}</div>
 
         <!-- Business opportunity card -->
-        <div class="intel-section card-light" style="margin-top:20px;border-radius:18px;padding:20px;">
+        <div class="intel-section card-light intel-intake-section" style="margin-top:20px;border-radius:18px;padding:20px;">
             <div class="intel-section-head" style="margin-bottom:16px;border-bottom:1px solid var(--border-light);padding-bottom:10px;">
-                <h2 class="intel-section-title" style="font-size:16px;font-weight:800;color:var(--text-primary);">💼 Safe Business Intake Capacity</h2>
+                <h2 class="intel-section-title" style="font-size:16px;font-weight:800;color:var(--text-primary);">${sectionTitleWithIcon(Icons.briefcase, 'Safe business intake')}</h2>
                 <span class="intel-section-sub" style="font-size:12px;line-height:1.4;color:var(--text-muted);margin-top:4px;display:block;">
-                    Based on our team's upcoming free capacity, this is the maximum number of new projects we can start right now without causing delays or developer burnout.
+                    How many new ${creatorMode ? 'campaigns' : 'projects'} you can start without overloading ${escapeHtml(primaryRole.toLowerCase())} capacity. Uses the same free-headcount signal as the busy-ness calendar — not a separate guess.
                 </span>
             </div>
             <div class="intel-intake-grid">${intakeCards}</div>
@@ -4359,7 +6303,7 @@ function renderPerformance() {
 
                 <section class="perf-doc-block">
                     <h2 class="perf-section-title">Ownership</h2>
-                    <p class="perf-section-desc">Who is carrying the project — watch for over-concentration (${brief.concentrationPct}% top contributor).</p>
+                    <p class="perf-section-desc">Team of ${brief.people} — top contributor at ${brief.concentrationPct}%; full breakdown below.</p>
                     <div class="perf-owner-list">${ownerRows}</div>
                 </section>
 
@@ -4430,7 +6374,7 @@ function renderHelp() {
         <!-- Section 2: Attention & Risk Engine -->
         <div class="card-light" style="padding:24px; border-radius:18px; margin-bottom:20px;">
             <h2 style="font-size:18px; font-weight:800; color:var(--text-primary); margin:0 0 10px; display:flex; align-items:center; gap:8px;">
-                ⚠️ Attention & Risk Engine
+                ${sectionTitleWithIcon(Icons.alert, 'Attention & Risk Engine')}
             </h2>
             <div style="font-size:13px; color:var(--text-secondary); line-height:1.6; margin-bottom:16px;">
                 The <strong>Attention Score</strong> (0 to 100) measures how much a project needs immediate review. Points are assigned for compounding risk factors, defined in <code>CONFIG.ATTENTION_WEIGHTS</code>:
@@ -4489,17 +6433,17 @@ function renderHelp() {
             </table>
 
             <div style="margin-top:16px; display:flex; gap:8px; flex-wrap:wrap;">
-                <span style="font-size:11px; font-weight:700; background:#D930251F; color:#D93025; padding:4px 8px; border-radius:6px;">🔴 Critical Risk: Score &ge; 70</span>
-                <span style="font-size:11px; font-weight:700; background:#F9AB001F; color:#B06000; padding:4px 8px; border-radius:6px;">🟡 High Risk: Score 50 - 69</span>
-                <span style="font-size:11px; font-weight:700; background:#1A73E81F; color:#1A73E8; padding:4px 8px; border-radius:6px;">🔵 Medium Risk: Score 30 - 49</span>
-                <span style="font-size:11px; font-weight:700; background:#1E8E3E1F; color:#1E8E3E; padding:4px 8px; border-radius:6px;">🟢 Low Risk: Score &lt; 30</span>
+                <span style="font-size:11px; font-weight:700; background:#D930251F; color:#D93025; padding:4px 8px; border-radius:6px;">Critical Risk: Score &ge; 70</span>
+                <span style="font-size:11px; font-weight:700; background:#F9AB001F; color:#B06000; padding:4px 8px; border-radius:6px;">High Risk: Score 50 - 69</span>
+                <span style="font-size:11px; font-weight:700; background:#1A73E81F; color:#1A73E8; padding:4px 8px; border-radius:6px;">Medium Risk: Score 30 - 49</span>
+                <span style="font-size:11px; font-weight:700; background:#1E8E3E1F; color:#1E8E3E; padding:4px 8px; border-radius:6px;">Low Risk: Score &lt; 30</span>
             </div>
         </div>
 
         <!-- Section 3: Projections & Timelines -->
         <div class="card-light" style="padding:24px; border-radius:18px; margin-bottom:20px;">
             <h2 style="font-size:18px; font-weight:800; color:var(--text-primary); margin:0 0 10px; display:flex; align-items:center; gap:8px;">
-                📈 Predictive Timeline & Velocity
+                ${sectionTitleWithIcon(Icons.trendUp, 'Predictive Timeline & Velocity')}
             </h2>
             <div style="font-size:13px; color:var(--text-secondary); line-height:1.6; margin-bottom:16px;">
                 How does Atlas project project completion dates dynamically?
@@ -4527,7 +6471,7 @@ function renderHelp() {
         <!-- Section 4: Resource Load and Intake -->
         <div class="card-light" style="padding:24px; border-radius:18px;">
             <h2 style="font-size:18px; font-weight:800; color:var(--text-primary); margin:0 0 10px; display:flex; align-items:center; gap:8px;">
-                👥 Resource Utilization & Intake
+                ${sectionTitleWithIcon(Icons.users, 'Resource Utilization & Intake')}
             </h2>
             <div style="font-size:13px; color:var(--text-secondary); line-height:1.6; margin-bottom:16px;">
                 Atlas builds weekly capacity slots to optimize staffing and avoid developer burnout.
@@ -4784,6 +6728,34 @@ function renderSettings() {
                         ${workspacesRows}
                     </tbody>
                 </table>
+            </div>
+        </div>
+
+        <!-- ── Resource notifications ───────────────────────── -->
+        <div class="stg-section" style="margin-top:36px; border-top: 1px solid var(--border-light); padding-top: 28px;">
+            <div class="stg-section-header">
+                <div>
+                    <div class="stg-section-title">Resource release emails</div>
+                    <div class="stg-section-sub">Update anytime. On release, employees get active projects + contact emails; resource managers get Needs-attention allocate suggestions.</div>
+                </div>
+                <button class="stg-btn stg-btn--primary" type="button" onclick="SettingsCtrl.saveNotifyEmails()">
+                    Save emails
+                </button>
+            </div>
+            <div class="stg-notify-grid" style="display:grid; gap:16px; max-width:720px;">
+                <label class="stg-field" style="display:flex; flex-direction:column; gap:6px;">
+                    <span class="stg-role-section-title">Resource manager emails</span>
+                    <span class="stg-section-sub">Comma-separated. Receive release alerts with suggested projects to allocate.</span>
+                    <textarea id="stg-rm-emails" class="stg-input" rows="3" placeholder="rm@company.com, lead@company.com"
+                        style="width:100%; min-height:72px; resize:vertical; padding:10px 12px; border-radius:8px; font:inherit;">${escapeHtml((typeof AppState !== 'undefined' && AppState.notifySettings && AppState.notifySettings.resource_manager_emails) || '')}</textarea>
+                </label>
+                <label class="stg-field" style="display:flex; flex-direction:column; gap:6px;">
+                    <span class="stg-role-section-title">Staffing contact emails (shown to employees)</span>
+                    <span class="stg-section-sub">Comma-separated contacts included in the employee release email. Paste addresses anytime; employee recipients come from the roster.</span>
+                    <textarea id="stg-contact-emails" class="stg-input" rows="4" placeholder="staffing@company.com, hr@company.com"
+                        style="width:100%; min-height:96px; resize:vertical; padding:10px 12px; border-radius:8px; font:inherit;">${escapeHtml((typeof AppState !== 'undefined' && AppState.notifySettings && AppState.notifySettings.staffing_contact_emails) || '')}</textarea>
+                </label>
+                <div class="stg-section-sub" id="stg-notify-status">For now release emails list active projects (department filter later).</div>
             </div>
         </div>
     </div>`;
