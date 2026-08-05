@@ -655,6 +655,10 @@ function renderKpiStrip() {
 function renderPipelineHealthCard() {
     const all     = AppState.allProjects;
     const total   = all.length || 1;
+    // Use non-Live pool as denominator for bar percentages — matches the headline "on track %" formula
+    // (HEALTH_SCORE_UNIFIED aligns hero ring + card headline; bars must use the same pool).
+    const nonLiveTotal = Math.max(all.filter(p => p.stage !== 'Live').length, 1);
+    const barDenom = featureOn('HEALTH_SCORE_UNIFIED') ? nonLiveTotal : total;
     const flagged = new Set(getUniqueAlertProjects(AppState.alerts).map(p => p.id));
     const onTrack = all.filter(p => !flagged.has(p.id) && p.stage !== 'Live').length;
     const overdue = AppState.alertOverdueCount;
@@ -685,7 +689,7 @@ function renderPipelineHealthCard() {
     ];
 
     const rowsHtml = rows.map(r => {
-        const pct = Math.round((r.count / total) * 100);
+        const pct = Math.round((r.count / barDenom) * 100);
         return `
         <div class="health-row">
             <div class="health-row__label" style="color:${r.color}">${r.label}</div>
@@ -707,9 +711,7 @@ function renderPipelineHealthCard() {
                 </div>
             </div>
             <div style="text-align:right;">
-                ${/* Bug #3 fix: use non-Live pool as denominator (matches hero ring formula)
-                    when HEALTH_SCORE_UNIFIED is on; otherwise falls back to all.length. */ ''}
-                <div style="font-size:28px; font-weight:900; line-height:1;">${Math.round(onTrack / Math.max(featureOn('HEALTH_SCORE_UNIFIED') ? all.filter(p => p.stage !== 'Live').length : total, 1) * 100)}%</div>
+                <div style="font-size:28px; font-weight:900; line-height:1;">${Math.round(onTrack / barDenom * 100)}%</div>
                 <div style="font-size:11px; opacity:0.6; margin-top:2px;">on track</div>
             </div>
         </div>
@@ -2863,13 +2865,12 @@ function renderRmDashboardTab(roster, summary, apiOnline) {
 
     const availablePeople = apiOnline
         ? (AppState.resourceApiEmployees || [])
-            .filter(e => isRmProjectStaffable(e) && (
-                (e.utilization_pct || 0) <= 0
-                || /bench|available/i.test(e.availability_status || '')
-            ) && !/leadership/i.test(e.availability_status || ''))
+            .filter(e => isRmProjectStaffable(e)
+                && ((e.utilization_pct || 0) <= 0 || /bench|available/i.test(e.availability_status || ''))
+                && !isRmLeadershipRole(e))
             .sort((a, b) => (a.full_name || '').localeCompare(b.full_name || ''))
             .slice(0, 8)
-        : roster.filter(e => e.availability === 'Bench' && isRmProjectStaffable(e)).slice(0, 8);
+        : roster.filter(e => e.availability === 'Bench' && isRmProjectStaffable(e) && !isRmLeadershipRole(e)).slice(0, 8);
 
     const availableHtml = availablePeople.length ? availablePeople.map(e => {
         const name = e.full_name || e.name;
@@ -3306,13 +3307,20 @@ function renderRmAllocationsTab(roster, apiOnline) {
     </div>`;
 }
 
+function isRmLeadershipRole(emp) {
+    const avail = String(emp?.availability_status || emp?.availability || '').toLowerCase();
+    if (/leadership|non.?project|excluded/.test(avail)) return true;
+    const desig = String(emp?.designation || emp?.role || '').toLowerCase();
+    if (/\b(director|head|manager|lead|vp|chief|principal|admin)\b/.test(desig)) return true;
+    return false;
+}
+
 function renderRmBenchTab(roster, apiOnline) {
     const bench = apiOnline && (AppState.resourceApiEmployees || []).length
-        ? (AppState.resourceApiEmployees || []).filter(e => isRmProjectStaffable(e) && (
-            (e.utilization_pct || 0) <= 0
-            || /bench|available/i.test(e.availability_status || '')
-        ) && !/leadership/i.test(e.availability_status || ''))
-        : roster.filter(e => e.availability === 'Bench' && isRmProjectStaffable(e));
+        ? (AppState.resourceApiEmployees || []).filter(e => isRmProjectStaffable(e)
+            && ((e.utilization_pct || 0) <= 0 || /bench|available/i.test(e.availability_status || ''))
+            && !isRmLeadershipRole(e))
+        : roster.filter(e => e.availability === 'Bench' && isRmProjectStaffable(e) && !isRmLeadershipRole(e));
 
     const recoPack = AppState.resourceBenchRecos;
     const recoByEmp = {};
