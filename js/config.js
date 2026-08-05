@@ -73,6 +73,14 @@ const CONFIG = {
             name: 'Streak',
             integrationType: 'google_sheets',
             sheetUrl: 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTAf7ftXa5lnlMJ0uZdHUldiGeQH2qGJeRu5FRJkQ-0_2WStLPRmPEQSFT-FqJjL5mitonbzE_u2-ov/pub?output=csv',
+            /**
+             * Company roster tab (Resource-management) — Manager view in Resources.
+             * Publish that tab to web (CSV) in the same spreadsheet.
+             */
+            resourceManagement: {
+                gid: '1655970411',
+                tabName: 'Resource-management',
+            },
         },
         {
             id: 'nexus',
@@ -262,6 +270,8 @@ const CONFIG = {
         AI_INSIGHTS: true,
         /** Resource Intelligence engines, Intelligence view, attention scores, capacity forecast. */
         RESOURCE_INTELLIGENCE: true,
+        /** Resources page: Delivery | Manager switch + roster from Resource-management sheet. */
+        RESOURCE_TRACKER: true,
         /** Use max(release_date, velocity projected) for resource assignment end dates. */
         RESOURCE_USE_PROJECTED_END: true,
         /** ClickUp: map list name (Valoriz, Streak, …) to project `client` for filters/cards. */
@@ -333,6 +343,26 @@ const CONFIG = {
         CACHE_TTL_MS: 900000,
     },
 
+    /**
+     * Resource Tracker API (Phase 0+).
+     * Default: same-origin proxy via serve.py → /api/resource/*
+     * Fallback direct: http://127.0.0.1:8090 if you run the API alone.
+     */
+    RESOURCE_API: {
+        ENABLED: true,
+        BASE_URL: '/api/resource',
+        TOKEN: '',  // match RESOURCE_SERVICE_TOKEN in services/resource-api/.env
+        TIMEOUT_MS: 12000,
+        /** Directors / leadership — never show on Bench or project assign pools. */
+        NON_PROJECT_STAFF_NAMES: [
+            'Ashish Thomas',
+            'Madhulal M G',
+            'Madhulal',
+            'Sharmiq Kollathodi',
+            'Sharmiw',
+        ],
+    },
+
     // ── App Meta ────────────────────────────────────────
     APP_NAME: 'Atlas',
     APP_VERSION: '1.0.0',
@@ -358,5 +388,6 @@ Object.freeze(CONFIG.AI);
 Object.freeze(CONFIG.ATTENTION_WEIGHTS);
 Object.freeze(CONFIG.CAPACITY);
 Object.freeze(CONFIG.INTAKE);
+Object.freeze(CONFIG.RESOURCE_API);
 Object.freeze(CONFIG.ZOHO_JOB_TEAM_MAP);
 Object.freeze(CONFIG.ZOHO_PRODUCTIVE_TEAMS);

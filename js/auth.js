@@ -530,7 +530,10 @@ const Auth = (() => {
                 || (typeof CONFIG !== 'undefined' && CONFIG.LOGIN_DEFAULT_WORKSPACE)
                 || (typeof CONFIG !== 'undefined' && CONFIG.DEFAULT_WORKSPACE);
             const ws = (CONFIG.WORKSPACES || []).find(w => w.id === wsId);
-            return (ws && ws.sheetUrl) ? ws.sheetUrl.trim() : '';
+            if (ws && (ws.sheetUrl || '').trim()) return ws.sheetUrl.trim();
+            const fallback = (CONFIG.WORKSPACES || []).find(w => (w.sheetUrl || '').trim());
+            if (fallback) return fallback.sheetUrl.trim();
+            return (CONFIG.SHEET_CSV_URL || '').trim();
         },
 
         _lpCountActiveProjects(projects) {

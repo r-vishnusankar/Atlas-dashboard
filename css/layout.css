@@ -477,6 +477,33 @@
   box-sizing: border-box;
 }
 
+.content-area--resources {
+  max-width: none;
+  width: 100%;
+  margin: 0;
+  box-sizing: border-box;
+}
+.content-area-scrollable--resources {
+  padding-left: 16px;
+  padding-right: 16px;
+}
+
+/* Manager View: lock to viewport — outer wrapper stops scrolling,
+   only the tab panel scrolls internally */
+.content-area-scrollable--resources:has(.res-page--manager) {
+  overflow: hidden;
+  padding-bottom: 0;
+  display: flex;
+  flex-direction: column;
+}
+.content-area--resources:has(.res-page--manager) {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
 /* ── Split Layout classes ── */
 .layout-split {
   display: flex;

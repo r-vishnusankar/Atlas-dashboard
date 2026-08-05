@@ -39,7 +39,7 @@ function headerCellToField(key) {
         project_id:        ['project_id', 'id'],
         project_name:      ['project_name', 'name', 'title'],
         owner:             ['owner', 'pm'],
-        client:            ['page_name', 'client'],
+        client:            ['page_name', 'client', 'current_page', 'current page'],
         page_owner:        ['page_owner'],
         stage:             ['stage', 'phase'],
         status:            ['status', 'health'],
@@ -1115,7 +1115,12 @@ function getClickUpMockData() {
 
 async function loadProjects(sheetUrl) {
     const ws = (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
-    if (ws.integrationType === 'clickup') {
+    const urlArg = String(sheetUrl || '').trim();
+    // Explicit published-sheet URL always loads CSV (login stats / forced sheet), even if
+    // AppState.activeWorkspace is ClickUp/Zoho from a previous session.
+    const forceSheet = !!urlArg && (/docs\.google\.com/i.test(urlArg) || /[?&]output=csv\b/i.test(urlArg));
+
+    if (!forceSheet && ws.integrationType === 'clickup') {
         console.log(`[Atlas] Loading ClickUp workspace: ${ws.name}`);
         const tasks = await loadClickUpTasks(ws.clickupListId, ws.clickupToken);
         const projects = tasks.map(t => mapClickUpTaskToProject(t, ws));
@@ -1123,7 +1128,7 @@ async function loadProjects(sheetUrl) {
         return { projects, source: 'clickup' };
     }
 
-    const url = (sheetUrl || CONFIG.SHEET_CSV_URL || '').trim();
+    const url = (urlArg || (ws.sheetUrl || '') || CONFIG.SHEET_CSV_URL || '').trim();
     if (!url) {
         console.error('[Atlas] No sheet URL configured for this workspace.');
         return { projects: [], source: 'error' };
@@ -1159,10 +1164,226 @@ function buildDetailSheetCsvUrl(gid, sheetBaseUrl) {
         const u = new URL(base);
         u.searchParams.set('output', 'csv');
         u.searchParams.set('gid', g);
+        u.searchParams.set('single', 'true');
         return u.toString();
     } catch (e) {
         console.warn('[Atlas] buildDetailSheetCsvUrl failed:', e);
         return null;
+    }
+}
+
+/** Normalize person name for roster ↔ delivery resource map matching. */
+function normalizePersonKey(name) {
+    return String(name || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+/** Guess role family from designation / department for capacity caps. */
+function roleFamilyFromDesignation(designation, department) {
+    const d = `${designation || ''} ${department || ''}`.toLowerCase();
+    if (/\bqa\b|quality/.test(d)) return 'QA';
+    if (/\bba\b|business analyst|product owner/.test(d)) return 'BA';
+    if (/marketing|branding|content|seo|social/.test(d)) return 'Content Creator';
+    if (/ui|ux|design/.test(d)) return 'Developer';
+    if (/devops|sre|infra/.test(d)) return 'Developer';
+    if (/project management|delivery|engineering manager|scrum/.test(d)) return 'Owner';
+    if (/director|leadership|hr|finance/.test(d)) return 'Owner';
+    if (/software|developer|engineer|architect|technical/.test(d)) return 'Developer';
+    return 'Developer';
+}
+
+function getResourceManagementConfig(ws) {
+    const w = ws || (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
+    return w.resourceManagement || CONFIG.RESOURCE_MANAGEMENT || null;
+}
+
+function getResourceManagementSheetUrl(ws) {
+    const cfg = getResourceManagementConfig(ws);
+    if (!cfg) return '';
+    if (cfg.csvUrl) return String(cfg.csvUrl).trim();
+    const w = ws || (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
+    const base = w.sheetUrl || CONFIG.SHEET_CSV_URL || '';
+    if (cfg.gid) return buildDetailSheetCsvUrl(cfg.gid, base) || '';
+    return '';
+}
+
+/**
+ * Parse Resource-management tab CSV into employee roster rows.
+ * Expected columns: Sl.No, Name, Department, Designation, Years at Valoriz, External Experience
+ */
+function parseResourceManagementCSV(csvText) {
+    const table = parseGenericTableCSV(csvText);
+    const headers = table.headers || [];
+    const norm = headers.map(h => normalizeHeaderForMatch(h));
+    const idx = (aliases) => {
+        for (const a of aliases) {
+            const i = norm.indexOf(a);
+            if (i >= 0) return i;
+        }
+        return -1;
+    };
+    const iNo = idx(['sl_no', 'sl.no', 'sno', 'si_no', 'id', 'employee_id', 'emp_id']);
+    const iName = idx(['name', 'employee_name', 'full_name', 'employee']);
+    const iDept = idx(['department', 'dept', 'team']);
+    const iDesig = idx(['designation', 'title', 'role', 'job_title']);
+    const iYears = idx(['years_at_valoriz', 'years_at_company', 'company_years', 'tenure']);
+    const iExt = idx(['external_experience', 'prior_experience', 'total_experience', 'experience']);
+
+    if (iName < 0) return [];
+
+    return (table.rows || []).map((row, rowIdx) => {
+        const name = String(row[iName] || '').trim();
+        if (!name) return null;
+        const department = iDept >= 0 ? String(row[iDept] || '').trim() : '';
+        const designation = iDesig >= 0 ? String(row[iDesig] || '').trim() : '';
+        const yearsAtCompany = iYears >= 0 ? parseFloat(String(row[iYears] || '').replace(/,/g, '')) : null;
+        const externalExp = iExt >= 0 ? parseFloat(String(row[iExt] || '').replace(/,/g, '')) : null;
+        const totalExp = (Number.isFinite(yearsAtCompany) ? yearsAtCompany : 0)
+            + (Number.isFinite(externalExp) ? externalExp : 0);
+        const code = iNo >= 0 && String(row[iNo] || '').trim()
+            ? String(row[iNo]).trim()
+            : String(rowIdx + 1);
+        return {
+            id: `emp-${code}-${normalizePersonKey(name).replace(/\s+/g, '-')}`,
+            employeeCode: code,
+            name,
+            nameKey: normalizePersonKey(name),
+            department: department || '—',
+            designation: designation || '—',
+            yearsAtCompany: Number.isFinite(yearsAtCompany) ? yearsAtCompany : null,
+            externalExperience: Number.isFinite(externalExp) ? externalExp : null,
+            totalExperience: totalExp > 0 ? Math.round(totalExp * 10) / 10 : null,
+            roleFamily: roleFamilyFromDesignation(designation, department),
+        };
+    }).filter(Boolean);
+}
+
+/**
+ * Join roster employees with delivery resource map (projects, conflicts, freeFrom).
+ */
+function enrichResourceRoster(employees, resourceMap) {
+    const map = resourceMap || {};
+    const byKey = {};
+    Object.values(map).forEach(p => {
+        const k = normalizePersonKey(p.name);
+        if (k) byKey[k] = p;
+    });
+
+    return (employees || []).map(emp => {
+        let person = byKey[emp.nameKey];
+        if (!person) {
+            // soft match: first+last token containment
+            const tokens = emp.nameKey.split(' ').filter(Boolean);
+            person = Object.values(map).find(p => {
+                const pk = normalizePersonKey(p.name);
+                if (!pk) return false;
+                if (pk === emp.nameKey) return true;
+                if (tokens.length >= 2 && tokens.every(t => pk.includes(t))) return true;
+                return false;
+            }) || null;
+        }
+
+        const activeCount = person ? (person.activeCount || 0) : 0;
+        const assignments = person
+            ? (person.assignments || []).filter(a => !a.completed)
+            : [];
+        const conflicts = person ? (person.conflicts || []) : [];
+        const maxCap = typeof getRoleCapacityMax === 'function'
+            ? getRoleCapacityMax(emp.roleFamily)
+            : 2;
+        const utilPct = maxCap > 0
+            ? Math.min(100, Math.round((activeCount / maxCap) * 100))
+            : 0;
+
+        let availability = 'Bench';
+        if (activeCount <= 0) availability = 'Bench';
+        else if (utilPct >= 85) availability = 'Fully Allocated';
+        else availability = 'Partially Allocated';
+
+        return {
+            ...emp,
+            matchedDeliveryName: person ? person.name : null,
+            activeCount,
+            assignments,
+            conflicts,
+            freeFrom: person ? person.freeFrom : null,
+            utilPct,
+            availability,
+            maxCapacity: maxCap,
+        };
+    });
+}
+
+function computeResourceRosterSummary(roster) {
+    const list = roster || [];
+    const byDept = {};
+    let allocated = 0;
+    let bench = 0;
+    let partial = 0;
+    let conflicts = 0;
+    let freeing30 = 0;
+    const today = typeof startOfDay === 'function' ? startOfDay(new Date()) : new Date();
+    const cut = today.getTime() + 30 * 86400000;
+
+    list.forEach(e => {
+        byDept[e.department] = (byDept[e.department] || 0) + 1;
+        if (e.availability === 'Bench') bench += 1;
+        else if (e.availability === 'Fully Allocated') allocated += 1;
+        else {
+            partial += 1;
+            allocated += 1;
+        }
+        if (e.conflicts && e.conflicts.length) conflicts += 1;
+        if (e.freeFrom && e.freeFrom.getTime && e.freeFrom.getTime() <= cut && e.activeCount > 0) {
+            freeing30 += 1;
+        }
+    });
+
+    const avgUtil = list.length
+        ? Math.round(list.reduce((s, e) => s + (e.utilPct || 0), 0) / list.length)
+        : 0;
+
+    return {
+        total: list.length,
+        allocated,
+        bench,
+        partial,
+        conflicts,
+        freeing30,
+        avgUtil,
+        byDepartment: byDept,
+    };
+}
+
+async function loadResourceManagementRoster(ws) {
+    if (typeof featureOn === 'function' && !featureOn('RESOURCE_TRACKER')) {
+        return { employees: [], meta: { skipped: true } };
+    }
+    const url = getResourceManagementSheetUrl(ws);
+    if (!url) {
+        return { employees: [], meta: { error: 'Resource-management sheet not configured for this workspace.' } };
+    }
+    try {
+        const response = await fetch(sheetFetchUrl(url), SHEET_FETCH_OPTIONS);
+        if (!response.ok) {
+            return { employees: [], meta: { error: `HTTP ${response.status} loading Resource-management sheet.` } };
+        }
+        const employees = parseResourceManagementCSV(await response.text());
+        const cfg = getResourceManagementConfig(ws) || {};
+        return {
+            employees,
+            meta: {
+                loadedAt: new Date().toISOString(),
+                source: cfg.tabName || 'Resource-management',
+                count: employees.length,
+                url,
+            },
+        };
+    } catch (e) {
+        return { employees: [], meta: { error: e.message || 'Failed to load Resource-management sheet.' } };
     }
 }
 
