@@ -1202,17 +1202,16 @@ const App = {
     _closeWorkspaceMenu() {
         const menu = document.getElementById('ws-menu');
         const trigger = document.getElementById('ws-trigger');
-        if (menu) menu.style.display = 'none';
+        if (menu) {
+            menu.style.display = 'none';
+            menu.style.pointerEvents = 'none';
+        }
         if (trigger) trigger.classList.remove('ws-trigger--open');
     },
 
     applyWorkspaceNav() {
         const zoho = AppState.isZohoActive;
         const zohoViews = ['performance', 'help', 'settings'];
-        const ws = AppState.activeWorkspace;
-        const clickupNoDb = ws?.integrationType === 'clickup'
-            && typeof getDatabaseSheetUrl === 'function'
-            && !getDatabaseSheetUrl(ws);
         document.querySelectorAll('.nav-item[data-view]').forEach(el => {
             const view = el.dataset.view;
             if (view === 'settings') return;
@@ -1225,8 +1224,9 @@ const App = {
                 el.style.display = 'none';
                 return;
             }
-            if (clickupNoDb && view === 'allocation') {
+            if (view === 'allocation') {
                 el.style.display = 'none';
+                el.hidden = true;
                 return;
             }
             if (CONFIG.RBAC_ENABLED && !Auth.canAccessView(view)) {
@@ -1294,6 +1294,11 @@ const App = {
         ALL_VIEWS.forEach(view => {
             const el = document.querySelector(`.nav-item[data-view="${view}"]`);
             if (!el) return;
+            if (view === 'allocation') {
+                el.style.display = 'none';
+                el.hidden = true;
+                return;
+            }
             el.style.display = Auth.canAccessView(view) ? '' : 'none';
         });
 
@@ -1369,6 +1374,7 @@ const App = {
         if (!menu) return;
         const isOpen = menu.style.display !== 'none';
         menu.style.display = isOpen ? 'none' : 'block';
+        menu.style.pointerEvents = isOpen ? 'none' : 'auto';
         trigger && trigger.classList.toggle('ws-trigger--open', !isOpen);
         if (!isOpen) {
             const close = (e) => {
@@ -1480,6 +1486,7 @@ const App = {
         } else {
             AppState.detailProjectId = null;
             let view = r.view;
+            if (view === 'allocation') view = 'resources';
             if (!validViews.includes(view)) view = 'overview';
             if (AppState.isZohoActive && !['performance', 'help', 'settings'].includes(view)) {
                 view = Auth.canAccessView('performance') ? 'performance' : (validViews.find(v => Auth.canAccessView(v)) || 'help');
@@ -1499,6 +1506,7 @@ const App = {
         this._closeWorkspaceMenu();
         const validViews = ['overview', 'projects', 'pipeline', 'alerts', 'resources', 'allocation', 'timeline', 'analytics', 'intelligence', 'performance', 'help', 'settings'];
         if (!validViews.includes(view)) view = 'overview';
+        if (view === 'allocation') view = 'resources';
         // Settings is admin-only
         if (view === 'settings' && Auth.currentUser?.role !== 'admin') view = 'overview';
         // RBAC guard — redirect to first allowed view
@@ -1517,6 +1525,8 @@ const App = {
 
         this.renderCurrentView();
         this.updateSidebarMeta();
+        const scrollWrap = document.querySelector('.content-area-scrollable');
+        if (scrollWrap) scrollWrap.scrollTop = 0;
         const ca = document.getElementById('content-area');
         if (ca) ca.scrollTop = 0;
     },
@@ -1653,7 +1663,9 @@ const App = {
         const wasSoft = this._softRender;
         if (opts.soft) this._softRender = true;
 
-        AtlasDD.closeAll();
+        if (typeof AtlasDD !== 'undefined' && typeof AtlasDD.closeAll === 'function') {
+            try { AtlasDD.closeAll(); } catch (e) { console.warn('[Atlas] closeAll', e); }
+        }
 
         root.classList.toggle('content-area--performance', AppState.currentView === 'performance');
         root.classList.toggle('content-area--resources', AppState.currentView === 'resources' || AppState.currentView === 'allocation');
@@ -1684,8 +1696,17 @@ const App = {
                     && AppState.databaseRosterStatus !== 'loading') {
                     this.loadDatabaseRoster({ silent: true });
                 }
-                this._setViewContent(root, renderResources());
-                this._restoreResPeopleView();
+                try {
+                    this._setViewContent(root, renderResources());
+                    this._restoreResPeopleView();
+                } catch (err) {
+                    console.error('[Atlas] Resources render failed:', err);
+                    this._setViewContent(root, `<div class="res-page" style="padding:48px 24px;text-align:center;color:var(--text-muted);">
+                        <h2 style="color:var(--text-primary);margin-bottom:8px;">Resources</h2>
+                        <p>Could not render this view. Click Refresh and try again.</p>
+                    </div>`);
+                    this.toast('Resources failed to load. Try Refresh.', 'error');
+                }
                 if (typeof AiInsights !== 'undefined') {
                     requestAnimationFrame(() => AiInsights.mountCapacity(aiOpts));
                 }
@@ -2356,10 +2377,10 @@ const App = {
         document.getElementById('sidebar-nav').addEventListener('click', e => {
             const item = e.target.closest('.nav-item');
             if (!item || !item.dataset.view) return;
+            if (item.hidden || item.getAttribute('hidden') != null || item.style.display === 'none') return;
             e.preventDefault();
             this._closeWorkspaceMenu();
             this.navigate(item.dataset.view);
-            // Close mobile sidebar
             this.closeMobileSidebar();
         });
 

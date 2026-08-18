@@ -11,7 +11,7 @@ import urllib.request
 from typing import Any
 
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-DEFAULT_MODEL = "llama-3.3-70b-versatile"
+DEFAULT_MODEL = "openai/gpt-oss-120b"
 MAX_BODY_BYTES = 48_000
 ALLOWED_TYPES = frozenset({
     "analytics_summary",

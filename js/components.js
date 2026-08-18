@@ -3593,7 +3593,7 @@ function renderResourcesDelivery() {
         const rosterLoading = AppState.databaseRosterStatus === 'loading';
         const msg = rosterLoading
             ? 'Loading people from Database sheet…'
-            : 'No people on the Database sheet yet. Publish the Database tab and refresh, or open Team allocation after load completes.';
+            : 'No people on the Database sheet yet. Publish the Database tab and refresh.';
         return `<div style="padding:40px;text-align:center;color:var(--text-muted);">${escapeHtml(msg)}</div>`;
     }
 
@@ -3626,7 +3626,7 @@ function renderResourcesDelivery() {
 
     /* ── A. Conflict Alerts ── */
     const CONFLICT_PREVIEW = 2; // show first N pairs; rest behind Shrink / Show more
-    const conflicted = people.filter(p => p.conflicts.length > 0);
+        const conflicted = people.filter(p => (p.conflicts || []).length > 0);
     let conflictHTML = '';
     if (conflicted.length) {
         conflictHTML = `<div class="res-conflict-grid">` + conflicted.map((p, pi) => {

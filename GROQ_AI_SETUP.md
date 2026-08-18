@@ -42,14 +42,14 @@ The static site on Netlify uses **serverless functions** in `netlify/functions/`
 1. [Netlify](https://app.netlify.com) → your site → **Site configuration** → **Environment variables**
 2. Add:
    - **`GROQ_API_KEY`** — your Groq key (same value as local `.env`)
-   - **`GROQ_MODEL`** (optional) — e.g. `llama-3.3-70b-versatile`
+   - **`GROQ_MODEL`** (optional) — e.g. `openai/gpt-oss-120b`
 3. **Deploys** → **Trigger deploy** → **Deploy site** (new deploy required after adding secrets)
 
 CLI alternative:
 
 ```bash
 netlify env:set GROQ_API_KEY "gsk_your_key_here"
-netlify env:set GROQ_MODEL "llama-3.3-70b-versatile"
+netlify env:set GROQ_MODEL "openai/gpt-oss-120b"
 ```
 
 ### 2. How it works
@@ -68,7 +68,7 @@ netlify env:set GROQ_MODEL "llama-3.3-70b-versatile"
 `https://YOUR-SITE.netlify.app/api/ai/health`
 
 ```json
-{ "ok": true, "enabled": true, "model": "llama-3.3-70b-versatile" }
+{ "ok": true, "enabled": true, "model": "openai/gpt-oss-120b" }
 ```
 
 If you see the **sidebar / Overview page** instead, redirects are wrong — ensure `_redirects` and `netlify.toml` include `/api/ai/*` **before** `/* → /index.html`, then redeploy.
