@@ -72,6 +72,21 @@ const AiInsights = {
         } catch (_) { /* quota */ }
     },
 
+    /** Free sessionStorage used by AI insight caches. */
+    clearCache() {
+        try {
+            const keys = [];
+            for (let i = 0; i < sessionStorage.length; i++) {
+                const k = sessionStorage.key(i);
+                if (k && k.startsWith('atlas_ai_')) keys.push(k);
+            }
+            keys.forEach(k => sessionStorage.removeItem(k));
+            return keys.length;
+        } catch (_) {
+            return 0;
+        }
+    },
+
     _formatAiText(text) {
         if (!text) return "";
         const esc = typeof escapeHtml === "function" ? escapeHtml(text) : text;
@@ -325,14 +340,16 @@ const AiInsights = {
     },
 
     buildIntelligencePayload() {
-        const sum = AppState.intelligenceSummary || {};
-        const intake = AppState.intakeRecommendation || {};
-        const cap = AppState.capacityForecast || {};
+        const intel = AppState.deliveryIntelligence || {};
+        const sum = intel.intelligenceSummary || AppState.intelligenceSummary || {};
+        const intake = intel.intakeRecommendation || AppState.intakeRecommendation || {};
+        const cap = intel.capacityForecast || AppState.capacityForecast || {};
+        const ranked = intel.attentionRanked || AppState.attentionRanked || [];
         return {
             workspace: AppState.activeWorkspaceId,
             summary: sum,
             intake_slots: { small: intake.small, medium: intake.medium, large: intake.large },
-            top_attention: (AppState.attentionRanked || []).slice(0, 8).map((p) => ({
+            top_attention: ranked.slice(0, 8).map((p) => ({
                 name: p.name,
                 score: p.attentionScore,
                 tier: p.attentionTier,
@@ -340,6 +357,7 @@ const AiInsights = {
                 stage: p.stage,
             })),
             freeing_next_30: (cap.summary?.freeingNext30 || []).slice(0, 8),
+            free_now: (cap.summary?.freeNow || []).slice(0, 8),
             utilization_by_role: Object.fromEntries(
                 ['Developer', 'QA', 'BA'].map((role) => {
                     const w = cap.roles?.[role]?.weeks?.[0];
@@ -352,7 +370,7 @@ const AiInsights = {
     },
 
     buildCapacityPayload() {
-        const cap = AppState.capacityForecast || {};
+        const cap = AppState.deliveryCapacityForecast || AppState.capacityForecast || {};
         const roles = cap.roles || {};
         return {
             workspace: AppState.activeWorkspaceId,

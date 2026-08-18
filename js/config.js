@@ -37,7 +37,7 @@ const CONFIG = {
             actions: '*',   // export, refresh, switchWorkspace, theme
         },
         manager: {
-            views: ['overview', 'projects', 'pipeline', 'alerts', 'resources', 'timeline', 'analytics', 'intelligence', 'performance'],
+            views: ['overview', 'projects', 'pipeline', 'alerts', 'resources', 'allocation', 'timeline', 'analytics', 'intelligence', 'performance'],
             actions: ['export', 'refresh', 'switchWorkspace', 'theme'],
         },
         developer: {
@@ -77,9 +77,15 @@ const CONFIG = {
              * Company roster tab (Resource-management) — Manager view in Resources.
              * Publish that tab to web (CSV) in the same spreadsheet.
              */
+            /** Manager view roster (HR fields) — not used for Team allocation names. */
             resourceManagement: {
                 gid: '1655970411',
                 tabName: 'Resource-management',
+            },
+            /** Delivery name list — Developer / QA / BA columns (Team allocation). */
+            database: {
+                gid: '1554730418',
+                tabName: 'Database',
             },
         },
         {
@@ -94,7 +100,7 @@ const CONFIG = {
             displayName: 'Digital Marketing Dashboard',
             integrationType: 'clickup',
             clickupListId: '90166990133',
-            clickupToken: 'pk_101076116_FZ2GAK8V6OHUBNON5WCKM8FZE5EYQYDV',
+            clickupToken: 'pk_101076116_9NAQKT6UMHZGTSXGS3BBWCBM9RH4U5CH',
             sheetUrl: '',
             /**
              * People model: every ClickUp assignee is a Content Creator (no Dev/QA/BA).
@@ -369,12 +375,42 @@ const CONFIG = {
     TEAM_NAME: 'Product & Engineering',
 };
 
-// Load workspaces from localStorage if present BEFORE freezing
+/**
+ * Merge file workspaces with Settings (localStorage).
+ * - Every workspace in config.js always appears (new ones cannot vanish).
+ * - Matching ids keep Settings field edits (token, sheet URL, name).
+ * - User-added workspaces (ids not in the file) are kept.
+ */
+function mergeConfigWorkspaces(fileList, storedList) {
+    const file = Array.isArray(fileList) ? fileList : [];
+    const stored = Array.isArray(storedList) ? storedList : [];
+    const storedById = new Map();
+    stored.forEach(w => { if (w && w.id) storedById.set(w.id, w); });
+    const fileIds = new Set(file.map(w => w.id));
+    const merged = file.map(fw => {
+        const sw = storedById.get(fw.id);
+        if (!sw) return fw;
+        // File keeps identity + integration; Settings may keep URL/token edits.
+        return Object.assign({}, fw, sw, {
+            id: fw.id,
+            integrationType: fw.integrationType || sw.integrationType,
+            clickupListId: fw.clickupListId || sw.clickupListId,
+            clickupToken: fw.clickupToken || sw.clickupToken,
+            sheetUrl: fw.sheetUrl || sw.sheetUrl,
+        });
+    });
+    stored.forEach(sw => {
+        if (sw && sw.id && !fileIds.has(sw.id)) merged.push(sw);
+    });
+    return merged;
+}
+
 try {
     const storedWorkspaces = localStorage.getItem('atlas_workspaces');
     if (storedWorkspaces) {
-        CONFIG.WORKSPACES = JSON.parse(storedWorkspaces);
+        CONFIG.WORKSPACES = mergeConfigWorkspaces(CONFIG.WORKSPACES, JSON.parse(storedWorkspaces));
     }
+    localStorage.setItem('atlas_workspaces', JSON.stringify(CONFIG.WORKSPACES));
 } catch (e) {
     console.error('[Atlas] Failed to load workspaces from localStorage:', e);
 }

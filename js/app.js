@@ -11,6 +11,21 @@ const App = {
     _lastLiveFetch: 0,     // ms — debounce tab-focus refetch
     _softRender:    false, // true during silent data refresh (no flash / no AI reset)
 
+    /** Clear browser session caches and in-memory derived state. */
+    clearClientCaches() {
+        let aiKeys = 0;
+        if (typeof AiInsights !== 'undefined' && AiInsights.clearCache) {
+            aiKeys = AiInsights.clearCache();
+        }
+        if (typeof AppState !== 'undefined' && AppState.clearDerivedCaches) {
+            AppState.clearDerivedCaches();
+        }
+        if (typeof Auth !== 'undefined' && Auth.invalidateLoginStatsCache) {
+            Auth.invalidateLoginStatsCache();
+        }
+        return aiKeys;
+    },
+
     async init() {
         // Setup Theme first so there's no flash
         const savedTheme = localStorage.getItem('streakjs_theme') || 'light';
@@ -58,6 +73,7 @@ const App = {
         const roadmapCount = enriched.filter(p => p.roadmap?.hasSibling).length;
         // Fire-and-forget company roster (+ Resource API shadow sync after load)
         this.loadResourceRoster({ silent: true });
+        this.loadDatabaseRoster({ silent: true });
         return { projects: enriched, source, roadmapCount };
     },
 
@@ -78,7 +94,7 @@ const App = {
                     hint: 'Run python serve.py (auto-starts API) or: cd services/resource-api && python run.py',
                 };
                 if (!silent) this.toast('Resource API offline — using sheet roster only', 'warning', 5000);
-                if (AppState.currentView === 'resources') this.renderCurrentView({ soft: true });
+                if (AppState.currentView === 'resources' || AppState.currentView === 'allocation') this.renderCurrentView({ soft: true });
                 return;
             }
             AppState.resourceApiStatus = 'online';
@@ -138,7 +154,7 @@ const App = {
                 const n = imported?.data?.total ?? AppState.resourceApiEmployees.length;
                 this.toast(`Resource API synced · ${n} employees`, 'success', 3500);
             }
-            if (AppState.currentView === 'resources') this.renderCurrentView({ soft: true });
+            if (AppState.currentView === 'resources' || AppState.currentView === 'allocation') this.renderCurrentView({ soft: true });
         } catch (e) {
             AppState.resourceApiStatus = 'offline';
             AppState.resourceApiMeta = {
@@ -146,7 +162,7 @@ const App = {
                 at: new Date().toISOString(),
                 hint: 'Run python serve.py (auto-starts API) or: cd services/resource-api && python run.py',
             };
-            if (AppState.currentView === 'resources') this.renderCurrentView({ soft: true });
+            if (AppState.currentView === 'resources' || AppState.currentView === 'allocation') this.renderCurrentView({ soft: true });
         }
     },
 
@@ -168,6 +184,52 @@ const App = {
         if (!opts.skipApiSync) this.syncResourceApi({ silent: true });
     },
 
+    async loadDatabaseRoster(opts = {}) {
+        if (typeof loadDatabaseSheetRoster !== 'function') return;
+        const silent = !!opts.silent;
+        const ws = AppState.activeWorkspace;
+        const onDeliveryResources = AppState.currentView === 'resources'
+            && (AppState.resourcesViewMode || 'delivery') !== 'manager';
+        const onIntelligence = AppState.currentView === 'intelligence';
+        AppState.databaseRosterStatus = 'loading';
+        if (!silent && (AppState.currentView === 'allocation' || onDeliveryResources || onIntelligence)) {
+            this.renderCurrentView({ soft: true });
+        }
+
+        let employees = [];
+        let meta = {};
+
+        if (typeof getDatabaseSheetUrl === 'function' && getDatabaseSheetUrl(ws)) {
+            const result = await loadDatabaseSheetRoster(ws);
+            employees = result.employees;
+            meta = result.meta;
+        } else if (typeof isContentCreatorWorkspace === 'function' && isContentCreatorWorkspace(ws)
+            && typeof buildClickUpAssigneeRoster === 'function') {
+            employees = buildClickUpAssigneeRoster(AppState.allProjects, ws);
+            meta = {
+                loadedAt: new Date().toISOString(),
+                source: 'ClickUp assignees',
+                count: employees.length,
+            };
+        } else {
+            meta = { error: 'Database sheet not configured for this workspace.' };
+        }
+
+        AppState.setDatabaseRoster(employees, meta);
+        AppState.databaseRosterStatus = meta?.error ? 'error' : 'ready';
+        if (!silent) {
+            if (meta?.error) this.toast(meta.error, 'error', 5000);
+            else this.toast(`Loaded ${employees.length} names from ${meta.source || 'Database sheet'}`, 'success', 3000);
+        }
+        if (AppState.currentView === 'allocation' || onDeliveryResources || onIntelligence) {
+            this.renderCurrentView({ soft: true });
+        }
+    },
+
+    reloadDatabaseRoster() {
+        return this.loadDatabaseRoster({ silent: false });
+    },
+
     reloadResourceRoster() {
         return this.loadResourceRoster({ silent: false });
     },
@@ -178,11 +240,35 @@ const App = {
             && AppState.resourceRosterStatus !== 'loading') {
             this.loadResourceRoster({ silent: true });
         }
+        if (mode === 'delivery' && !(AppState.databaseRoster || []).length
+            && AppState.databaseRosterStatus !== 'loading') {
+            this.loadDatabaseRoster({ silent: true });
+        }
         // Reset scroll before render so the viewport-locked manager view
         // starts at the top (delivery view scroll would otherwise hide it)
         const scrollEl = document.querySelector('.content-area-scrollable');
         if (scrollEl) scrollEl.scrollTop = 0;
         this.renderCurrentView();
+    },
+
+    setAllocationView(view) {
+        AppState.setAllocationView(view);
+        this.renderCurrentView({ soft: true });
+    },
+
+    setAllocationFilter(filter) {
+        AppState.setAllocationFilter(filter);
+        this.renderCurrentView({ soft: true });
+    },
+
+    setIntelReleaseTab(tab) {
+        AppState.setIntelReleaseTab(tab);
+        this.renderCurrentView({ soft: true });
+    },
+
+    setAllocationSearch(q) {
+        AppState.setAllocationSearch(q);
+        this.renderCurrentView({ soft: true });
     },
 
     setResourcesManagerTab(tab) {
@@ -1113,17 +1199,43 @@ const App = {
         renderDonutChart('perf-team-donut', teamDonutData(teamAgg), 'Hours');
     },
 
+    _closeWorkspaceMenu() {
+        const menu = document.getElementById('ws-menu');
+        const trigger = document.getElementById('ws-trigger');
+        if (menu) menu.style.display = 'none';
+        if (trigger) trigger.classList.remove('ws-trigger--open');
+    },
+
     applyWorkspaceNav() {
         const zoho = AppState.isZohoActive;
         const zohoViews = ['performance', 'help', 'settings'];
+        const ws = AppState.activeWorkspace;
+        const clickupNoDb = ws?.integrationType === 'clickup'
+            && typeof getDatabaseSheetUrl === 'function'
+            && !getDatabaseSheetUrl(ws);
         document.querySelectorAll('.nav-item[data-view]').forEach(el => {
             const view = el.dataset.view;
             if (view === 'settings') return;
             if (zoho && !zohoViews.includes(view)) {
                 el.style.display = 'none';
-            } else if (!zoho && view === 'performance') {
-                el.style.display = 'none';
+                el.style.pointerEvents = '';
+                return;
             }
+            if (!zoho && view === 'performance') {
+                el.style.display = 'none';
+                return;
+            }
+            if (clickupNoDb && view === 'allocation') {
+                el.style.display = 'none';
+                return;
+            }
+            if (CONFIG.RBAC_ENABLED && !Auth.canAccessView(view)) {
+                el.style.display = 'none';
+                return;
+            }
+            el.style.display = '';
+            el.style.pointerEvents = '';
+            el.removeAttribute('aria-disabled');
         });
     },
 
@@ -1176,7 +1288,7 @@ const App = {
     applyRBACToUI() {
         if (!CONFIG.RBAC_ENABLED) return;
 
-        const ALL_VIEWS = ['overview', 'projects', 'pipeline', 'alerts', 'resources', 'timeline', 'analytics', 'intelligence', 'performance', 'help'];
+        const ALL_VIEWS = ['overview', 'projects', 'pipeline', 'alerts', 'resources', 'allocation', 'timeline', 'analytics', 'intelligence', 'performance', 'help'];
 
         // Sidebar nav items
         ALL_VIEWS.forEach(view => {
@@ -1357,7 +1469,7 @@ const App = {
     },
 
     syncStateFromHash() {
-        const validViews = ['overview', 'projects', 'pipeline', 'alerts', 'resources', 'timeline', 'analytics', 'intelligence', 'performance', 'help', 'settings'];
+        const validViews = ['overview', 'projects', 'pipeline', 'alerts', 'resources', 'allocation', 'timeline', 'analytics', 'intelligence', 'performance', 'help', 'settings'];
         const r = this.parseHash();
         if (r.projectId) {
             AppState.detailProjectId = r.projectId;
@@ -1384,7 +1496,8 @@ const App = {
     },
 
     navigate(view, pushHash = true) {
-        const validViews = ['overview', 'projects', 'pipeline', 'alerts', 'resources', 'timeline', 'analytics', 'intelligence', 'performance', 'help', 'settings'];
+        this._closeWorkspaceMenu();
+        const validViews = ['overview', 'projects', 'pipeline', 'alerts', 'resources', 'allocation', 'timeline', 'analytics', 'intelligence', 'performance', 'help', 'settings'];
         if (!validViews.includes(view)) view = 'overview';
         // Settings is admin-only
         if (view === 'settings' && Auth.currentUser?.role !== 'admin') view = 'overview';
@@ -1543,10 +1656,10 @@ const App = {
         AtlasDD.closeAll();
 
         root.classList.toggle('content-area--performance', AppState.currentView === 'performance');
-        root.classList.toggle('content-area--resources', AppState.currentView === 'resources');
+        root.classList.toggle('content-area--resources', AppState.currentView === 'resources' || AppState.currentView === 'allocation');
         const scrollWrap = document.querySelector('.content-area-scrollable');
         if (scrollWrap) {
-            scrollWrap.classList.toggle('content-area-scrollable--resources', AppState.currentView === 'resources');
+            scrollWrap.classList.toggle('content-area-scrollable--resources', AppState.currentView === 'resources' || AppState.currentView === 'allocation');
         }
         this.setProjectPageLayoutClass(AppState.currentView === 'project');
 
@@ -1566,11 +1679,22 @@ const App = {
                 this._setViewContent(root, renderAlerts());
                 break;
             case 'resources':
+                if ((AppState.resourcesViewMode || 'delivery') !== 'manager'
+                    && !(AppState.databaseRoster || []).length
+                    && AppState.databaseRosterStatus !== 'loading') {
+                    this.loadDatabaseRoster({ silent: true });
+                }
                 this._setViewContent(root, renderResources());
                 this._restoreResPeopleView();
                 if (typeof AiInsights !== 'undefined') {
                     requestAnimationFrame(() => AiInsights.mountCapacity(aiOpts));
                 }
+                break;
+            case 'allocation':
+                if (!(AppState.databaseRoster || []).length && AppState.databaseRosterStatus !== 'loading') {
+                    this.loadDatabaseRoster({ silent: true });
+                }
+                this._setViewContent(root, renderTeamAllocation());
                 break;
             case 'timeline':
                 this._setViewContent(root, AppState.timelineMode === 'calendar'
@@ -1584,6 +1708,10 @@ const App = {
                 }
                 break;
             case 'intelligence':
+                if (!(AppState.databaseRoster || []).length
+                    && AppState.databaseRosterStatus !== 'loading') {
+                    this.loadDatabaseRoster({ silent: true });
+                }
                 this._setViewContent(root, renderIntelligence());
                 if (typeof AiInsights !== 'undefined') {
                     requestAnimationFrame(() => AiInsights.mountIntelligence(aiOpts));
@@ -2067,6 +2195,8 @@ const App = {
     },
 
     async refresh(silent = false) {
+        if (!silent) this.clearClientCaches();
+
         if (!silent) {
             const btn = document.getElementById('btn-refresh');
             if (btn) btn.querySelector('svg').classList.add('spinning');
@@ -2177,6 +2307,8 @@ const App = {
         set('count-intelligence', intelCrit || AppState.attentionRanked.filter(p => p.attentionTier === 'high').length);
         const conflictCount = Object.values(AppState.resourceMap).filter(p => p.conflicts.length > 0).length;
         set('count-resources', conflictCount || Object.keys(AppState.resourceMap).length);
+        const allocStats = AppState.siblingAllocation?.stats || {};
+        set('count-allocation', allocStats.onWork || 0);
         this.updateAvailBadge();
 
         // Data source indicator
@@ -2223,12 +2355,12 @@ const App = {
         // Sidebar nav
         document.getElementById('sidebar-nav').addEventListener('click', e => {
             const item = e.target.closest('.nav-item');
-            if (item) {
-                e.preventDefault();
-                this.navigate(item.dataset.view);
-                // Close mobile sidebar
-                this.closeMobileSidebar();
-            }
+            if (!item || !item.dataset.view) return;
+            e.preventDefault();
+            this._closeWorkspaceMenu();
+            this.navigate(item.dataset.view);
+            // Close mobile sidebar
+            this.closeMobileSidebar();
         });
 
         // Search input (debounced)
@@ -2716,10 +2848,10 @@ const SettingsCtrl = (() => {
         },
 
         resetToDefaults() {
-            if (!confirm('Reset all roles to default settings? This cannot be undone.')) return;
+            if (!confirm('Reset roles and workspaces to config.js defaults? This cannot be undone.')) return;
             Auth.resetSettings();
-            rerender();
-            App.toast('Reset to defaults', 'info');
+            try { localStorage.removeItem('atlas_workspaces'); } catch (_) { /* ignore */ }
+            location.reload();
         },
 
         async loadNotifyEmails() {

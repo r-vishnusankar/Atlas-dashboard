@@ -112,7 +112,10 @@ function calcProjectDuration(p) {
 
 /** Pipeline health score 0-100 from alert-free share of active projects */
 function calcHealthScore() {
-    const all     = AppState.allProjects.filter(p => p.stage !== 'Live');
+    const all     = AppState.allProjects.filter(p => {
+        if (typeof getProjectLifecycle === 'function' && getProjectLifecycle(p).phase === 'post_live') return false;
+        return p.stage !== 'Live';
+    });
     const total   = all.length || 1;
     const flagged = getUniqueAlertProjects(AppState.alerts).length;
     const score   = Math.max(0, Math.min(100, Math.round(((total - flagged) / total) * 100)));
@@ -451,6 +454,10 @@ function renderAtRiskNow() {
             ? `<span style="font-size:10px;color:var(--text-muted);">${team.length} people</span>`
             : '';
 
+        const stageLabel = typeof getProjectLifecycle === 'function'
+            ? getProjectLifecycle(p).displayLabel
+            : p.stage;
+
         return `
         <div class="ov-risk-item" style="border-left:3px solid ${meta.color};background:${meta.bg};"
              onclick="App.handleCardClick('${p.id}')">
@@ -467,7 +474,7 @@ function renderAtRiskNow() {
                 <div class="ov-risk-name">${escapeHtml(p.name)}</div>
                 <div class="ov-risk-meta">
                     <span class="ov-risk-badge" style="background:${meta.color}22;color:${meta.color};">${meta.label}</span>
-                    <span style="font-size:11px;color:var(--text-muted);">${escapeHtml(p.stage)}</span>
+                    <span style="font-size:11px;color:var(--text-muted);">${escapeHtml(stageLabel)}</span>
                     ${teamHint}
                 </div>
             </div>
@@ -719,28 +726,38 @@ function renderPipelineHealthCard() {
     </div>`;
 }
 
-function renderRecentLive() {
-    const { recentlyLive } = computeOverviewDateMetrics(AppState.allProjects);
-    const live = recentlyLive.slice(0, 3);
-
-    if (!live.length) return '';
-
-    const rows = live.map(p => {
-        const init = getInitials(p.owner);
-        const avc  = stringToColor(p.owner);
-        const { badge, badgeColor } = getLaunchTimingBadge(p);
-        const dur = calcProjectDuration(p);
-        const durText = dur ? `· ${dur.text} to build` : '';
-        return `
+function renderOverviewLiveRow(p, today) {
+    const init = getInitials(p.owner);
+    const avc  = stringToColor(p.owner);
+    const lc   = typeof getProjectLifecycle === 'function' ? getProjectLifecycle(p) : null;
+    const dur  = calcProjectDuration(p);
+    const durText = dur ? ` · ${dur.text} to build` : '';
+    const { badge, badgeColor } = getLaunchTimingBadge(p, today);
+    const dateMeta = isValidParsedDate(p.actual_live_date)
+        ? formatDateShort(p.actual_live_date)
+        : (lc?.phase === 'post_live' ? lc.displayLabel : '—');
+    const rightBadge = lc?.phase === 'post_live'
+        ? `<div class="live-row__badge" style="color:#1E8E3E;background:rgba(30,142,62,0.12);">${escapeHtml(lc.displayLabel)}</div>`
+        : (badge ? `<div class="live-row__badge" style="color:${badgeColor};background:${badgeColor}22;">${badge}</div>` : '');
+    return `
         <div class="live-row" onclick="App.handleCardClick('${p.id}')">
             <div class="live-row__avatar" style="background:${avc}">${init}</div>
             <div class="live-row__info">
                 <div class="live-row__name">${escapeHtml(p.name)}</div>
-                <div class="live-row__meta">${escapeHtml(p.client || '—')} · ${formatDateShort(p.actual_live_date)}${durText}</div>
+                <div class="live-row__meta">${escapeHtml(p.client || '—')} · ${escapeHtml(dateMeta)}${durText}</div>
             </div>
-            ${badge ? `<div class="live-row__badge" style="color:${badgeColor};background:${badgeColor}22;">${badge}</div>` : ''}
+            ${rightBadge}
         </div>`;
-    }).join('');
+}
+
+function renderRecentLive() {
+    const { recentlyLive } = computeOverviewDateMetrics(AppState.allProjects);
+    const today = startOfDay(new Date());
+    const live = recentlyLive.slice(0, 3);
+
+    if (!live.length) return '';
+
+    const rows = live.map(p => renderOverviewLiveRow(p, today)).join('');
 
     return `
     <div>
@@ -976,21 +993,7 @@ function renderOverview(projects) {
     const today = dateMetrics.today;
     const recentLive = dateMetrics.recentlyLive.slice(0, 3);
 
-    const recentLiveRows = recentLive.map(p => {
-        const init = getInitials(p.owner);
-        const avc  = stringToColor(p.owner);
-        const dur  = calcProjectDuration(p);
-        const { badge, badgeColor: bColor } = getLaunchTimingBadge(p, today);
-        return `
-        <div class="live-row" onclick="App.handleCardClick('${p.id}')">
-            <div class="live-row__avatar" style="background:${avc}">${init}</div>
-            <div class="live-row__info">
-                <div class="live-row__name">${escapeHtml(p.name)}</div>
-                <div class="live-row__meta">${escapeHtml(p.client||'—')} · ${formatDateShort(p.actual_live_date)}${dur?' · '+dur.text+' to build':''}</div>
-            </div>
-            ${badge?`<div class="live-row__badge" style="color:${bColor};background:${bColor}22;">${badge}</div>`:''}
-        </div>`;
-    }).join('');
+    const recentLiveRows = recentLive.map(p => renderOverviewLiveRow(p, today)).join('');
 
     return `
     <!-- ── Hero Metrics ── -->
@@ -1404,9 +1407,14 @@ function renderAvailabilityCalendar(resMap) {
     }
 
     Object.values(resMap).forEach(p => {
+        const avail = getResourceAvailability(p, today);
+        if (avail.status === 'free') {
+            freeNow.push(p);
+            return;
+        }
         if (!p.freeFrom) return;
         const d = new Date(p.freeFrom); d.setHours(0,0,0,0);
-        if (d <= today) { freeNow.push(p); return; }
+        if (d <= today) return;
         const key = localKey(d);
         if (!freeMap[key]) freeMap[key] = [];
         freeMap[key].push(p);
@@ -1550,8 +1558,9 @@ function renderAvailPopoverContent() {
             <div class="res-pop-info">
                 <div class="res-pop-name">${escapeHtml(p.name)}${hasConflict ? ` <span class="res-pop-cfl ui-inline-icon" aria-label="Conflict">${Icons.alert}</span>` : ''}</div>
                 <div class="res-pop-bar-wrap"><div class="res-pop-bar" style="width:${barW}%"></div></div>
+                ${avail.subtitle ? `<div class="res-pop-sub">${escapeHtml(avail.subtitle)}</div>` : ''}
             </div>
-            <span class="res-pop-chip ${avail.popClass}">${avail.label}</span>
+            <span class="res-pop-chip ${avail.popClass}">${escapeHtml(avail.label)}</span>
         </div>`;
     }).join('');
 }
@@ -1572,7 +1581,7 @@ function renderPeopleTable(people, today, WINDOW, statusColor, statusLabel, fmtD
         const avc  = stringToColor(p.name);
         const hasConflict = p.conflicts.length > 0;
         const avail = getResourceAvailability(p, today);
-        const chipText = avail.status === 'now' ? 'Free now' : avail.label || '—';
+        const chipText = avail.label || '—';
         const chipCls  = avail.chipClass || '';
 
         // Load severity
@@ -1628,6 +1637,7 @@ function renderPeopleTable(people, today, WINDOW, statusColor, statusLabel, fmtD
             <!-- Availability -->
             <td class="res-tbl-cell res-tbl-cell--avail">
                 <span class="res-free-chip ${chipCls}" style="font-size:10px;padding:2px 8px;">${escapeHtml(chipText)}</span>
+                ${avail.subtitle ? `<div class="res-tbl-avail-sub">${escapeHtml(avail.subtitle)}</div>` : ''}
             </td>
             <!-- Active projects (pills) -->
             <td class="res-tbl-cell res-tbl-cell--projects">
@@ -1676,6 +1686,145 @@ function renderResources() {
         ${switcher}
         ${body}
     </div>`;
+}
+
+/* ══════════════════════════════════════════
+   DELIVERY ALLOCATION — Database names + Delivery tabs (shared by Resources delivery + Team allocation)
+══════════════════════════════════════════ */
+function renderSiblingAllocationView(opts = {}) {
+    const title = opts.title || 'Team allocation';
+    const subtitle = opts.subtitle
+        || 'Names from <strong>Database</strong> sheet. Work from Delivery tabs only — Stage <strong>Live</strong> = done.';
+    const data = AppState.siblingAllocation;
+    const stats = data.stats || {};
+    const view = AppState.allocationView || 'people';
+    const filter = AppState.allocationFilter || 'all';
+    const searchQ = String(AppState.allocationSearch || '').trim().toLowerCase();
+
+    const matchesSearch = (name) => !searchQ || String(name || '').toLowerCase().includes(searchQ);
+
+    const statBar = `
+    <div class="alloc-stats">
+        <div class="alloc-stat alloc-stat--work">
+            <span class="alloc-stat-num">${stats.onWork || 0}</span>
+            <span class="alloc-stat-lbl">On work</span>
+        </div>
+        <div class="alloc-stat alloc-stat--free">
+            <span class="alloc-stat-num">${stats.free || 0}</span>
+            <span class="alloc-stat-lbl">Free</span>
+        </div>
+        <div class="alloc-stat">
+            <span class="alloc-stat-num">${stats.activeRows || 0}</span>
+            <span class="alloc-stat-lbl">Open pages</span>
+        </div>
+        <div class="alloc-stat">
+            <span class="alloc-stat-num">${stats.projectsWithSibling || 0}</span>
+            <span class="alloc-stat-lbl">Delivery tabs</span>
+        </div>
+    </div>`;
+
+    const viewTabs = ['people', 'projects'].map(v => {
+        const lbl = v === 'people' ? 'By person' : 'By project';
+        return `<button type="button" class="alloc-tab ${view === v ? 'alloc-tab--active' : ''}"
+            onclick="App.setAllocationView('${v}')">${lbl}</button>`;
+    }).join('');
+
+    const filterPills = [
+        ['all', 'All'],
+        ['on_work', 'On work'],
+        ['free', 'Free'],
+    ].map(([id, lbl]) => `
+        <button type="button" class="alloc-filter ${filter === id ? 'alloc-filter--active' : ''}"
+            onclick="App.setAllocationFilter('${id}')">${lbl}</button>`).join('');
+
+    function statusChip(active) {
+        return active
+            ? '<span class="alloc-chip alloc-chip--work">On work</span>'
+            : '<span class="alloc-chip alloc-chip--free">Free</span>';
+    }
+
+    function projectPills(rows) {
+        const names = [...new Set((rows || []).map(r => r.projectName).filter(Boolean))];
+        if (!names.length) return '<span class="alloc-muted">—</span>';
+        return names.map(n => `<span class="alloc-proj-pill">${escapeHtml(n)}</span>`).join('');
+    }
+
+    let body = '';
+    const effectiveView = view === 'rows' ? 'people' : view;
+
+    if (effectiveView === 'people') {
+        let people = (data.people || []).filter(p => matchesSearch(p.name));
+        if (filter === 'on_work') people = people.filter(p => p.status === 'on_work');
+        if (filter === 'free') people = people.filter(p => p.status === 'free');
+
+        if (!people.length) {
+            body = `<div class="alloc-empty">No people match this filter.${stats.totalPeople ? '' : ' Load projects with Delivery tabs first.'}</div>`;
+        } else {
+            body = `<div class="alloc-table-wrap"><table class="alloc-table" aria-label="Team allocation by person">
+                <thead><tr>
+                    <th>Person</th><th>Status</th><th>Projects</th>
+                </tr></thead><tbody>
+                ${people.map(p => {
+                    const init = getInitials(p.name);
+                    const avc = stringToColor(p.name);
+                    const activeRows = p.activeRows || [];
+                    return `<tr>
+                        <td><div class="alloc-person"><span class="alloc-avatar" style="background:${avc}">${init}</span>${escapeHtml(p.name)}</div></td>
+                        <td>${statusChip(p.status === 'on_work')}</td>
+                        <td class="alloc-proj-cell">${projectPills(activeRows)}</td>
+                    </tr>`;
+                }).join('')}
+                </tbody></table></div>`;
+        }
+    } else if (effectiveView === 'projects') {
+        let projects = (data.projectsActive || []).filter(p =>
+            !searchQ || p.name.toLowerCase().includes(searchQ) || p.people.some(n => n.toLowerCase().includes(searchQ))
+        );
+        if (filter === 'free') projects = [];
+
+        if (!projects.length) {
+            body = `<div class="alloc-empty">${filter === 'free' ? 'Projects view shows only active work — switch to By person for Free list.' : 'No projects with open Delivery rows.'}</div>`;
+        } else {
+            body = `<div class="alloc-table-wrap"><table class="alloc-table" aria-label="Team allocation by project">
+                <thead><tr>
+                    <th>Project</th><th>People on work</th><th>Open pages</th>
+                </tr></thead><tbody>
+                ${projects.map(p => {
+                    const peopleStr = p.people.map(n => escapeHtml(n)).join(', ');
+                    return `<tr>
+                        <td><button type="button" class="alloc-link" onclick="App.handleCardClick('${escapeHtml(p.id)}')">${escapeHtml(p.name)}</button></td>
+                        <td>${peopleStr || '—'}</td>
+                        <td>${p.rowCount}</td>
+                    </tr>`;
+                }).join('')}
+                </tbody></table></div>`;
+        }
+    }
+
+    return `
+    <div class="alloc-page">
+        <header class="alloc-head">
+            <div>
+                <h1 class="alloc-title">${escapeHtml(title)}</h1>
+                <p class="alloc-sub">${subtitle}</p>
+            </div>
+        </header>
+        ${statBar}
+        <div class="alloc-toolbar">
+            <div class="alloc-tabs" role="tablist">${viewTabs}</div>
+            <div class="alloc-filters">${filterPills}</div>
+            <input type="search" class="alloc-search" placeholder="Search name, project, page…"
+                value="${escapeHtml(AppState.allocationSearch || '')}"
+                oninput="App.setAllocationSearch(this.value)" />
+        </div>
+        ${body}
+    </div>`;
+}
+
+function renderTeamAllocation() {
+    return renderSiblingAllocationView({
+        title: 'Team allocation',
+    });
 }
 
 function getManagerRoster() {
@@ -3433,7 +3582,7 @@ function renderRmReportsTab(roster, summary, apiOnline) {
 }
 
 function renderResourcesDelivery() {
-    const resMap    = AppState.resourceMap;
+    const resMap    = AppState.resourceDeliveryMap || {};
     const people    = Object.values(resMap).sort((a, b) => b.activeCount - a.activeCount);
     const today     = new Date(); today.setHours(0,0,0,0);
     const WINDOW    = 120; // days to display
@@ -3441,7 +3590,11 @@ function renderResourcesDelivery() {
     const horizonMs = horizon - today;
 
     if (!people.length) {
-        return `<div style="padding:40px;text-align:center;color:var(--text-muted);">No resource data available. Ensure projects have owner, developer and QA fields filled.</div>`;
+        const rosterLoading = AppState.databaseRosterStatus === 'loading';
+        const msg = rosterLoading
+            ? 'Loading people from Database sheet…'
+            : 'No people on the Database sheet yet. Publish the Database tab and refresh, or open Team allocation after load completes.';
+        return `<div style="padding:40px;text-align:center;color:var(--text-muted);">${escapeHtml(msg)}</div>`;
     }
 
     /* ─ helpers ─ */
@@ -3704,7 +3857,7 @@ function renderResourcesDelivery() {
 
     let capacityMiniHTML = '';
     if (intelligenceEnabled()) {
-        const cap = AppState.capacityForecast;
+        const cap = AppState.deliveryCapacityForecast;
         const roles = cap.roles || {};
         const intelRoles = typeof getIntelRoles === 'function' ? getIntelRoles() : ['Developer', 'QA', 'BA'];
         capacityMiniHTML = `
@@ -5773,11 +5926,11 @@ function renderIntelligence() {
         return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
     }
 
-    const sum = AppState.intelligenceSummary || {};
-    const ranked = AppState.attentionRanked.slice(0, 12);
-    const cap = AppState.capacityForecast;
-    const intake = AppState.intakeRecommendation || {};
-    const resMap = AppState.resourceMap;
+    const intel = AppState.deliveryIntelligence || {};
+    const sum = intel.intelligenceSummary || AppState.intelligenceSummary || {};
+    const ranked = (intel.attentionRanked || AppState.attentionRanked).slice(0, 12);
+    const cap = intel.capacityForecast || AppState.capacityForecast;
+    const intake = intel.intakeRecommendation || AppState.intakeRecommendation || {};
     const creatorMode = typeof isContentCreatorWorkspace === 'function' && isContentCreatorWorkspace();
     const primaryRole = typeof getPrimaryWorkRole === 'function' ? getPrimaryWorkRole() : 'Developer';
     const intakeTiers = intake.tiers || {};
@@ -5854,12 +6007,20 @@ function renderIntelligence() {
         </div>`;
     }).join('') : `<div class="intel-empty intel-empty--ok"><span class="ui-inline-icon" aria-hidden="true">${Icons.checkCircle}</span> All active projects are running smoothly. No scored risks.</div>`;
 
-    const releasePeople = (cap.summary?.freeingNext30 || []).slice(0, 10);
-    const releaseHTML = releasePeople.length ? releasePeople.map(p => {
+    const releaseTab = AppState.intelReleaseTab || 'now';
+    const freeNowList = (cap.summary?.freeNow || []);
+    const freeing30List = (cap.summary?.freeingNext30 || []);
+    const releasePeople = releaseTab === '30d' ? freeing30List : freeNowList;
+
+    function renderIntelReleaseRow(p, mode) {
         const init = getInitials(p.name);
         const avc  = stringToColor(p.name);
+        const chipClass = mode === 'now' ? 'res-free-chip--now' : 'res-free-chip--work';
+        const chipLabel = mode === 'now'
+            ? 'Available now'
+            : (p.freeFrom ? `Available ${fmtDate(parseSmartDate(p.freeFrom))}` : 'Available soon');
         return `
-        <div class="intel-release-row" style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;gap:12px;">
+        <div class="intel-release-row">
             <div style="display:flex;align-items:center;gap:10px;min-width:0;flex:1;">
                 <div class="res-tbl-avatar" style="background:${avc};width:30px;height:30px;font-size:10px;font-weight:700;color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;">${init}</div>
                 <div style="min-width:0;">
@@ -5867,11 +6028,25 @@ function renderIntelligence() {
                     <div class="intel-release-roles" style="font-size:11px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml((p.roles || []).join(', '))}</div>
                 </div>
             </div>
-            <div class="res-free-chip res-free-chip--now" style="font-size:11px;font-weight:700;padding:3px 10px;border-radius:99px;white-space:nowrap;">
-                Available ${escapeHtml(p.freeFrom || 'soon')}
+            <div class="res-free-chip ${chipClass}" style="font-size:11px;font-weight:700;padding:3px 10px;border-radius:99px;white-space:nowrap;">
+                ${escapeHtml(chipLabel)}
             </div>
         </div>`;
-    }).join('') : `<div class="intel-empty">Nobody is scheduled to roll off projects in the next 30 days.</div>`;
+    }
+
+    const releaseEmpty = releaseTab === '30d'
+        ? 'Nobody is scheduled to roll off projects in the next 30 days.'
+        : 'No team members are free right now.';
+    const releaseHTML = releasePeople.length
+        ? releasePeople.slice(0, 15).map(p => renderIntelReleaseRow(p, releaseTab)).join('')
+        : `<div class="intel-empty">${releaseEmpty}</div>`;
+
+    const releaseTabs = [
+        ['now', 'Free now', freeNowList.length],
+        ['30d', 'Free in 30 days', freeing30List.length],
+    ].map(([id, lbl, count]) => `
+        <button type="button" class="tl-tab ${releaseTab === id ? 'tl-tab--active' : ''}"
+            onclick="App.setIntelReleaseTab('${id}')">${escapeHtml(lbl)} <span class="intel-release-tab-count">${count}</span></button>`).join('');
 
     const roles = cap.roles || {};
     const intelRoles = typeof getIntelRoles === 'function' ? getIntelRoles() : ['Developer', 'QA', 'BA', 'Owner', 'Page owner'];
@@ -5977,12 +6152,15 @@ function renderIntelligence() {
 
             <!-- Resource release card -->
             <div class="intel-section card-light" style="border-radius:18px;padding:20px;">
-                <div class="intel-section-head" style="margin-bottom:16px;border-bottom:1px solid var(--border-light);padding-bottom:10px;">
-                    <h2 class="intel-section-title" style="font-size:16px;font-weight:800;color:var(--text-primary);">${sectionTitleWithIcon(Icons.users, 'Team Rolling Off Soon (30d)')}</h2>
+                <div class="intel-section-head" style="margin-bottom:12px;border-bottom:1px solid var(--border-light);padding-bottom:10px;">
+                    <h2 class="intel-section-title" style="font-size:16px;font-weight:800;color:var(--text-primary);">${sectionTitleWithIcon(Icons.users, 'Team Availability')}</h2>
                     <span class="intel-section-sub" style="font-size:12px;line-height:1.4;color:var(--text-muted);margin-top:4px;display:block;">
-                        These team members are finishing their current project commitments in the next 30 days and will be ready for new assignments.
+                        ${releaseTab === '30d'
+                            ? 'Team members finishing active Delivery work within the next 30 days (by sibling release date).'
+                            : 'Team members with no active Delivery assignments today (Database roster · Match By Person).'}
                     </span>
                 </div>
+                <div class="tl-view-tabs intel-release-tabs" style="margin-bottom:14px;">${releaseTabs}</div>
                 <div class="intel-release-list">${releaseHTML}</div>
             </div>
         </div>

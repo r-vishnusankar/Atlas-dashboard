@@ -7,6 +7,7 @@ services/resource-api/.venv/
 services/resource-api/resource_tracker.db
 services/resource-api/.env
 services/resource-api/api_startup.log
+services/resource-api/outbox_mail.log
 
 # Local Netlify folder
 .netlify
