@@ -6,10 +6,17 @@ from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from app.config import get_settings
 
 settings = get_settings()
-connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
-engine = create_engine(settings.database_url, connect_args=connect_args, future=True)
+_db_url = settings.sqlalchemy_url
+_is_sqlite = _db_url.startswith("sqlite")
+_engine_kwargs = {"future": True, "pool_pre_ping": True}
+if _is_sqlite:
+    _engine_kwargs["connect_args"] = {"check_same_thread": False}
+else:
+    _engine_kwargs["pool_size"] = 5
+    _engine_kwargs["max_overflow"] = 10
+engine = create_engine(_db_url, **_engine_kwargs)
 
-if settings.database_url.startswith("sqlite"):
+if _is_sqlite:
     @event.listens_for(engine, "connect")
     def _sqlite_fk(dbapi_conn, _):
         cursor = dbapi_conn.cursor()
@@ -39,7 +46,7 @@ def init_db() -> None:
 
 def _migrate_sqlite_columns() -> None:
     """Add new columns on existing SQLite DBs (create_all does not alter)."""
-    if not settings.database_url.startswith("sqlite"):
+    if not _is_sqlite:
         return
     with engine.begin() as conn:
         cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(projects_catalog)").fetchall()}

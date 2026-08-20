@@ -351,14 +351,18 @@ const CONFIG = {
 
     /**
      * Resource Tracker API (Phase 0+).
-     * Default: same-origin proxy via serve.py → /api/resource/*
-     * Fallback direct: http://127.0.0.1:8090 if you run the API alone.
+     * Local: same-origin proxy via serve.py → /api/resource/*
+     * Production (Netlify): hosted Render service (cold start can take ~30–50s).
      */
     RESOURCE_API: {
         ENABLED: true,
-        BASE_URL: '/api/resource',
+        BASE_URL: (typeof location !== 'undefined' && /\.netlify\.app$/i.test(location.hostname))
+            ? 'https://atlas-resource-api.onrender.com'
+            : '/api/resource',
         TOKEN: '',  // match RESOURCE_SERVICE_TOKEN in services/resource-api/.env
-        TIMEOUT_MS: 12000,
+        TIMEOUT_MS: (typeof location !== 'undefined' && /\.netlify\.app$/i.test(location.hostname))
+            ? 60000
+            : 12000,
         /** Directors / leadership — never show on Bench or project assign pools. */
         NON_PROJECT_STAFF_NAMES: [
             'Ashish Thomas',
