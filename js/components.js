@@ -1837,6 +1837,38 @@ function asRmList(val) {
     return Array.isArray(val) ? val : [];
 }
 
+function findRmSheetPerson(emp, roster) {
+    const name = emp?.full_name || emp?.name || '';
+    const list = roster || [];
+    const key = typeof normalizePersonKey === 'function' ? normalizePersonKey(name) : String(name).toLowerCase();
+    const byKey = list.find(r => r.nameKey === key || (typeof normalizePersonKey === 'function' && normalizePersonKey(r.name) === key));
+    if (byKey) return byKey;
+    if (typeof personNamesSoftMatch === 'function') {
+        return list.find(r => personNamesSoftMatch(name, r.name)) || null;
+    }
+    return null;
+}
+
+/** True bench: not on delivery work, and not assigned via Resource API FTE. */
+function isRmAvailableNow(emp, roster) {
+    if (!emp || !isRmProjectStaffable(emp) || isRmLeadershipRole(emp)) return false;
+    if ((Number(emp.utilization_pct) || 0) > 0) return false;
+    const st = String(emp.availability_status || emp.availability || '');
+    if (st && /full|partial/i.test(st) && !/bench|available/i.test(st)) return false;
+    const sheet = findRmSheetPerson(emp, roster);
+    if (sheet && sheet.availability && sheet.availability !== 'Bench') return false;
+    return true;
+}
+
+function listRmAvailablePeople(roster, apiEmps, apiOnline) {
+    const list = (apiOnline && (apiEmps || []).length)
+        ? apiEmps.filter(e => isRmAvailableNow(e, roster))
+        : (roster || []).filter(e =>
+            e.availability === 'Bench' && isRmProjectStaffable(e) && !isRmLeadershipRole(e));
+    return list.slice().sort((a, b) =>
+        String(a.full_name || a.name || '').localeCompare(String(b.full_name || b.name || '')));
+}
+
 function renderResourcesManagerView() {
     const status = AppState.resourceRosterStatus || 'idle';
     const meta = AppState.resourceRosterMeta || {};
@@ -1846,23 +1878,21 @@ function renderResourcesManagerView() {
     const apiOnline = AppState.resourceApiStatus === 'online';
     const dash = apiOnline && AppState.resourceApiMeta?.dashboard;
     const dashOk = !!(dash && typeof dash === 'object' && Number.isFinite(Number(dash.total_employees)));
-    const summary = dashOk
-        ? {
-            total: AppState.resourceApiMeta.dashboard.total_employees,
-            allocated: AppState.resourceApiMeta.dashboard.allocated,
-            bench: AppState.resourceApiMeta.dashboard.bench,
-            partial: AppState.resourceApiMeta.dashboard.partially_allocated,
-            conflicts: roster.filter(e => e.conflicts?.length).length,
-            freeing30: AppState.resourceApiMeta.dashboard.freeing_30d,
-            avgUtil: AppState.resourceApiMeta.dashboard.avg_utilization_pct,
-            byDepartment: (typeof computeResourceRosterSummary === 'function'
-                ? computeResourceRosterSummary(roster) : {}).byDepartment || {},
-            overAllocated: AppState.resourceApiMeta.dashboard.over_allocated,
-            fromApi: true,
-        }
-        : (typeof computeResourceRosterSummary === 'function'
-            ? computeResourceRosterSummary(roster)
-            : { total: roster.length, allocated: 0, bench: 0, partial: 0, conflicts: 0, freeing30: 0, avgUtil: 0, byDepartment: {} });
+    const apiHasFte = !!(dashOk && ((Number(dash.allocated) || 0) > 0 || (Number(dash.active_allocations) || 0) > 0));
+    const sheetSum = typeof computeResourceRosterSummary === 'function'
+        ? computeResourceRosterSummary(roster)
+        : { total: roster.length, allocated: 0, bench: 0, partial: 0, conflicts: 0, freeing30: 0, avgUtil: 0, byDepartment: {} };
+    const availablePeople = listRmAvailablePeople(roster, apiEmps, apiOnline);
+    const summary = {
+        ...sheetSum,
+        bench: availablePeople.length,
+        conflicts: sheetSum.conflicts,
+        overAllocated: apiHasFte
+            ? Math.max(sheetSum.conflicts || 0, Number(dash.over_allocated) || 0)
+            : sheetSum.conflicts,
+        freeing30: apiHasFte ? (Number(dash.freeing_30d) || sheetSum.freeing30) : sheetSum.freeing30,
+        fromApi: false,
+    };
 
     if (status === 'loading' && !roster.length && !apiEmps.length) {
         return `
@@ -3021,12 +3051,7 @@ function renderRmDashboardTab(roster, summary, apiOnline) {
     }).join('') : `<div class="rm-empty">No high-attention projects right now.</div>`;
 
     const availablePeople = apiOnline
-        ? asRmList(AppState.resourceApiEmployees)
-            .filter(e => isRmProjectStaffable(e)
-                && ((e.utilization_pct || 0) <= 0 || /bench|available/i.test(e.availability_status || ''))
-                && !isRmLeadershipRole(e))
-            .sort((a, b) => (a.full_name || '').localeCompare(b.full_name || ''))
-            .slice(0, 8)
+        ? listRmAvailablePeople(roster, asRmList(AppState.resourceApiEmployees), true).slice(0, 8)
         : roster.filter(e => e.availability === 'Bench' && isRmProjectStaffable(e) && !isRmLeadershipRole(e)).slice(0, 8);
 
     const availableHtml = availablePeople.length ? availablePeople.map(e => {
@@ -3473,11 +3498,7 @@ function isRmLeadershipRole(emp) {
 }
 
 function renderRmBenchTab(roster, apiOnline) {
-    const bench = apiOnline && asRmList(AppState.resourceApiEmployees).length
-        ? asRmList(AppState.resourceApiEmployees).filter(e => isRmProjectStaffable(e)
-            && ((e.utilization_pct || 0) <= 0 || /bench|available/i.test(e.availability_status || ''))
-            && !isRmLeadershipRole(e))
-        : roster.filter(e => e.availability === 'Bench' && isRmProjectStaffable(e) && !isRmLeadershipRole(e));
+    const bench = listRmAvailablePeople(roster, asRmList(AppState.resourceApiEmployees), apiOnline);
 
     const recoPack = AppState.resourceBenchRecos;
     const recoByEmp = {};
