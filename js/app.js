@@ -86,12 +86,15 @@ const App = {
         const full = !!opts.full; // include jobs + reco + trend (slower)
         try {
             const health = await ResourceApi.health();
-            if (!health.ok) {
+            if (!ResourceApi.isLiveHealth(health)) {
                 AppState.resourceApiStatus = 'offline';
+                AppState.resourceApiEmployees = [];
+                AppState.resourceApiAllocations = [];
+                AppState.resourceApiProjects = [];
                 AppState.resourceApiMeta = {
                     error: health.error || 'unreachable',
                     at: new Date().toISOString(),
-                    hint: 'Run python serve.py (auto-starts API) or: cd services/resource-api && python run.py',
+                    hint: 'Netlify does not host the Resource tracker. Manager view uses the Resource-management sheet.',
                 };
                 if (!silent) this.toast('Resource API offline — using sheet roster only', 'warning', 5000);
                 if (AppState.currentView === 'resources' || AppState.currentView === 'allocation') this.renderCurrentView({ soft: true });
@@ -114,9 +117,9 @@ const App = {
                 ResourceApi.listProjects({ workspace_id: wsId, include_completed: true }),
             ]);
 
-            AppState.resourceApiEmployees = emps.ok ? (emps.data || []) : [];
-            AppState.resourceApiAllocations = allocs.ok ? (allocs.data || []) : [];
-            AppState.resourceApiProjects = catalog.ok ? (catalog.data || []) : [];
+            AppState.resourceApiEmployees = ResourceApi.asList(emps);
+            AppState.resourceApiAllocations = ResourceApi.asList(allocs);
+            AppState.resourceApiProjects = ResourceApi.asList(catalog);
 
             let jobs = null;
             if (full) {
@@ -157,10 +160,13 @@ const App = {
             if (AppState.currentView === 'resources' || AppState.currentView === 'allocation') this.renderCurrentView({ soft: true });
         } catch (e) {
             AppState.resourceApiStatus = 'offline';
+            AppState.resourceApiEmployees = [];
+            AppState.resourceApiAllocations = [];
+            AppState.resourceApiProjects = [];
             AppState.resourceApiMeta = {
                 error: e.message || 'sync failed',
                 at: new Date().toISOString(),
-                hint: 'Run python serve.py (auto-starts API) or: cd services/resource-api && python run.py',
+                hint: 'Netlify does not host the Resource tracker. Manager view uses the Resource-management sheet.',
             };
             if (AppState.currentView === 'resources' || AppState.currentView === 'allocation') this.renderCurrentView({ soft: true });
         }
@@ -567,7 +573,7 @@ const App = {
             host.innerHTML = `<span class="rm-hint">Select one or more people below</span>`;
             return;
         }
-        const empMap = Object.fromEntries((AppState.resourceApiEmployees || []).map(e => [String(e.id), e]));
+        const empMap = Object.fromEntries(asRmList(AppState.resourceApiEmployees).map(e => [String(e.id), e]));
         host.innerHTML = ids.map(id => {
             const e = empMap[id];
             const name = e?.full_name || id;
@@ -596,7 +602,7 @@ const App = {
         const m = this.ensureAllocDraft();
         const peopleQ = String(AppState.resourceAllocPeopleFilter || '').trim().toLowerCase();
         const roleQ = String(AppState.resourceAllocRoleFilter || '').trim().toLowerCase();
-        let employees = [...(AppState.resourceApiEmployees || [])];
+        let employees = [...asRmList(AppState.resourceApiEmployees)];
         if (peopleQ) {
             employees = employees.filter(e =>
                 String(e.full_name || '').toLowerCase().includes(peopleQ)
@@ -941,7 +947,7 @@ const App = {
             strict: fd.get('strict') === 'on',
         };
 
-        const empLookup = Object.fromEntries((AppState.resourceApiEmployees || []).map(e => [String(e.id), e]));
+        const empLookup = Object.fromEntries(asRmList(AppState.resourceApiEmployees).map(e => [String(e.id), e]));
 
         let ok = 0;
         let failed = 0;

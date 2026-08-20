@@ -1833,14 +1833,20 @@ function getManagerRoster() {
         : (AppState.resourceRoster || []);
 }
 
+function asRmList(val) {
+    return Array.isArray(val) ? val : [];
+}
+
 function renderResourcesManagerView() {
     const status = AppState.resourceRosterStatus || 'idle';
     const meta = AppState.resourceRosterMeta || {};
     const tab = AppState.resourcesManagerTab || 'dashboard';
     const roster = getManagerRoster();
+    const apiEmps = asRmList(AppState.resourceApiEmployees);
     const apiOnline = AppState.resourceApiStatus === 'online';
-    const apiEmps = AppState.resourceApiEmployees || [];
-    const summary = apiOnline && (AppState.resourceApiMeta?.dashboard)
+    const dash = apiOnline && AppState.resourceApiMeta?.dashboard;
+    const dashOk = !!(dash && typeof dash === 'object' && Number.isFinite(Number(dash.total_employees)));
+    const summary = dashOk
         ? {
             total: AppState.resourceApiMeta.dashboard.total_employees,
             allocated: AppState.resourceApiMeta.dashboard.allocated,
@@ -1972,7 +1978,7 @@ function renderResourcesManagerView() {
 /** Merge Resource API catalog + main Project tab (sibling sheet) for Manager Projects UI. */
 function getRmMergedProjects() {
     const byExt = new Map();
-    (AppState.resourceApiProjects || []).forEach(p => {
+    asRmList(AppState.resourceApiProjects).forEach(p => {
         const ext = String(p.external_id || '').trim();
         if (!ext) return;
         byExt.set(ext, {
@@ -2029,7 +2035,7 @@ function findRmMergedProject(selectedId, externalId) {
 /** Merge Atlas delivery projects + Resource API catalog for allocate dropdowns. */
 function getRmAllocatableProjects() {
     const byId = new Map();
-    (AppState.resourceApiProjects || []).forEach(p => {
+    asRmList(AppState.resourceApiProjects).forEach(p => {
         const id = p.external_id || p.id;
         if (!id) return;
         byId.set(String(id), {
@@ -2160,11 +2166,13 @@ function getRmProjectFte(externalId, allocs) {
 
 function getRmProjectsKpis(projects, allocs) {
     const dash = AppState.resourceApiMeta?.dashboard || {};
-    const emps = AppState.resourceApiEmployees || [];
+    const emps = asRmList(AppState.resourceApiEmployees);
+    const allocList = asRmList(allocs);
+    const projectList = asRmList(projects);
     return {
         totalPeople: dash.total_employees ?? emps.length,
-        activeProjects: projects.length,
-        totalFte: Math.round(allocs.reduce((s, a) => s + (Number(a.allocation_pct) || 0), 0) / 10) / 10,
+        activeProjects: projectList.length,
+        totalFte: Math.round(allocList.reduce((s, a) => s + (Number(a.allocation_pct) || 0), 0) / 10) / 10,
         utilization: dash.avg_utilization_pct ?? 0,
         openRoles: dash.bench ?? emps.filter(e => isRmProjectStaffable(e) && /bench|available/i.test(e.availability_status || '')).length,
     };
@@ -2550,12 +2558,12 @@ function renderRmProjectPane(apiOnline) {
 
     if (mode === 'detail' && (selectedId || AppState.resourceSelectedProjectExternalId)) {
         const p = findRmMergedProject(selectedId, AppState.resourceSelectedProjectExternalId)
-            || (AppState.resourceApiProjects || []).find(x => x.id === selectedId);
+            || asRmList(AppState.resourceApiProjects).find(x => x.id === selectedId);
         if (!p) {
             return `<div class="rm-proj-detail card-light"><div class="rm-pane-empty">Project not found.</div></div>`;
         }
         const extId = p.external_id || p.id;
-        const allocs = (AppState.resourceApiAllocations || []).filter(a => a.project_external_id === extId);
+        const allocs = asRmList(AppState.resourceApiAllocations).filter(a => a.project_external_id === extId);
         const projectFte = getRmProjectFte(extId, allocs);
         const daysLeft = daysUntilRelease(p.release_date);
 
@@ -2570,7 +2578,7 @@ function renderRmProjectPane(apiOnline) {
         const selected = new Set((draft.selectedEmployeeIds || []).map(String));
         const peopleQ = String(AppState.resourceAllocPeopleFilter || '').trim().toLowerCase();
         const roleQ = String(AppState.resourceAllocRoleFilter || '').trim().toLowerCase();
-        let employees = [...(AppState.resourceApiEmployees || [])].filter(isRmProjectStaffable);
+        let employees = [...asRmList(AppState.resourceApiEmployees)].filter(isRmProjectStaffable);
         if (peopleQ) {
             employees = employees.filter(e =>
                 String(e.full_name || '').toLowerCase().includes(peopleQ)
@@ -2584,7 +2592,7 @@ function renderRmProjectPane(apiOnline) {
         }
         employees.sort((a, b) => (a.full_name || '').localeCompare(b.full_name || ''));
         const alreadyOnProject = new Set(allocs.map(a => String(a.employee_id)));
-        const roles = [...new Set((AppState.resourceApiEmployees || []).map(e => e.designation || e.role_family).filter(Boolean))].sort();
+        const roles = [...new Set(asRmList(AppState.resourceApiEmployees).map(e => e.designation || e.role_family).filter(Boolean))].sort();
         const roleOpts = `<option value="">All Roles</option>${roles.map(r =>
             `<option value="${escapeHtml(r)}" ${roleQ === String(r).toLowerCase() ? 'selected' : ''}>${escapeHtml(r)}</option>`
         ).join('')}`;
@@ -2596,7 +2604,7 @@ function renderRmProjectPane(apiOnline) {
         });
         const totalSelectedFte = selected.size * (Number(draft.allocationPct) || 100);
         const selectedChips = [...selected].map(id => {
-            const e = (AppState.resourceApiEmployees || []).find(x => String(x.id) === id);
+            const e = asRmList(AppState.resourceApiEmployees).find(x => String(x.id) === id);
             const name = e?.full_name || id;
             return `<span class="rm-alloc-chip">
                 <span class="rm-avatar rm-avatar--sm" style="background:${stringToColor(name)}">${getInitials(name)}</span>
@@ -2606,7 +2614,7 @@ function renderRmProjectPane(apiOnline) {
             </span>`;
         }).join('');
 
-        const empMap = Object.fromEntries((AppState.resourceApiEmployees || []).map(e => [e.id, e]));
+        const empMap = Object.fromEntries(asRmList(AppState.resourceApiEmployees).map(e => [e.id, e]));
         const activeAllocs = allocs.filter(a => String(a.status || '').toLowerCase() !== 'released');
         const assignedRows = activeAllocs.length ? activeAllocs.map(a => {
             const emp = empMap[a.employee_id];
@@ -2654,7 +2662,7 @@ function renderRmProjectPane(apiOnline) {
                 <div class="rm-proj-detail-actions">
                     ${(() => {
                         const catId = p.catalogId || (p.source && p.source !== 'sheet' ? p.id : null)
-                            || ((AppState.resourceApiProjects || []).find(x => String(x.external_id) === String(extId)) || {}).id
+                            || (asRmList(AppState.resourceApiProjects).find(x => String(x.external_id) === String(extId)) || {}).id
                             || null;
                         if (catId) {
                             return `
@@ -2760,7 +2768,7 @@ function renderRmProjectsTab(apiOnline) {
     const page = Math.max(1, AppState.resourceProjectPage || 1);
     const pageSize = 50;
     const allocs = AppState.resourceApiAllocations || [];
-    const empMap = Object.fromEntries((AppState.resourceApiEmployees || []).map(e => [e.id, e]));
+    const empMap = Object.fromEntries(asRmList(AppState.resourceApiEmployees).map(e => [e.id, e]));
     const selectedId = AppState.resourceSelectedProjectId;
     const selectedExt = AppState.resourceSelectedProjectExternalId;
 
@@ -2797,7 +2805,7 @@ function renderRmProjectsTab(apiOnline) {
         const isSelected = (p.catalogId && selectedId === p.catalogId) || selectedExt === extId;
         const catArg = p.catalogId ? escapeHtml(p.catalogId) : '';
         const catId = p.catalogId
-            || ((AppState.resourceApiProjects || []).find(x => String(x.external_id) === String(extId)) || {}).id
+            || (asRmList(AppState.resourceApiProjects).find(x => String(x.external_id) === String(extId)) || {}).id
             || '';
         const isOps = getRmActivityType(p) === 'operational';
         return `<tr class="rm-proj-row ${isSelected ? 'rm-proj-row--selected' : ''}"
@@ -2885,10 +2893,10 @@ function renderRmEmployeeDrawer(apiEmps, apiOnline) {
     if (!id || !apiOnline) return '';
     const emp = (apiEmps || []).find(e => e.id === id);
     if (!emp) return '';
-    const allocs = (AppState.resourceApiAllocations || []).filter(a => a.employee_id === id);
+    const allocs = asRmList(AppState.resourceApiAllocations).filter(a => a.employee_id === id);
     const allocRows = allocs.length ? allocs.map(a => {
         const proj = getRmAllocatableProjects().find(p => p.id === a.project_external_id)
-            || (AppState.resourceApiProjects || []).find(p => p.external_id === a.project_external_id)
+            || asRmList(AppState.resourceApiProjects).find(p => p.external_id === a.project_external_id)
             || (AppState.allProjects || []).find(p => p.id === a.project_external_id);
         const name = proj ? (proj.name || proj.external_id) : a.project_external_id;
         return `<div class="rm-list-row">
@@ -3013,7 +3021,7 @@ function renderRmDashboardTab(roster, summary, apiOnline) {
     }).join('') : `<div class="rm-empty">No high-attention projects right now.</div>`;
 
     const availablePeople = apiOnline
-        ? (AppState.resourceApiEmployees || [])
+        ? asRmList(AppState.resourceApiEmployees)
             .filter(e => isRmProjectStaffable(e)
                 && ((e.utilization_pct || 0) <= 0 || /bench|available/i.test(e.availability_status || ''))
                 && !isRmLeadershipRole(e))
@@ -3281,10 +3289,10 @@ function renderRmAllocationsTab(roster, apiOnline) {
     const statusF = String(AppState.resourceAllocListStatusFilter || '').trim().toLowerCase();
     const filtersOn = !!(q || projectF || deptF || roleF || statusF);
 
-    if (apiOnline && (AppState.resourceApiAllocations || []).length >= 0) {
+    if (apiOnline && asRmList(AppState.resourceApiAllocations).length >= 0) {
         const allocs = AppState.resourceApiAllocations || [];
-        const empMap = Object.fromEntries((AppState.resourceApiEmployees || []).map(e => [e.id, e]));
-        const catalog = Object.fromEntries((AppState.resourceApiProjects || []).map(p => [p.external_id, p]));
+        const empMap = Object.fromEntries(asRmList(AppState.resourceApiEmployees).map(e => [e.id, e]));
+        const catalog = Object.fromEntries(asRmList(AppState.resourceApiProjects).map(p => [p.external_id, p]));
         const projMap = Object.fromEntries((AppState.allProjects || []).map(p => [p.id, p]));
 
         const enriched = allocs.map(a => {
@@ -3465,8 +3473,8 @@ function isRmLeadershipRole(emp) {
 }
 
 function renderRmBenchTab(roster, apiOnline) {
-    const bench = apiOnline && (AppState.resourceApiEmployees || []).length
-        ? (AppState.resourceApiEmployees || []).filter(e => isRmProjectStaffable(e)
+    const bench = apiOnline && asRmList(AppState.resourceApiEmployees).length
+        ? asRmList(AppState.resourceApiEmployees).filter(e => isRmProjectStaffable(e)
             && ((e.utilization_pct || 0) <= 0 || /bench|available/i.test(e.availability_status || ''))
             && !isRmLeadershipRole(e))
         : roster.filter(e => e.availability === 'Bench' && isRmProjectStaffable(e) && !isRmLeadershipRole(e));

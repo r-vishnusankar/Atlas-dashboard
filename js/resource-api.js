@@ -68,8 +68,24 @@ const ResourceApi = (() => {
                 return { ok: true, status: res.status, blob, filename: _filenameFromCd(res.headers.get('content-disposition')) };
             }
             const text = await res.text();
+            const trimmed = String(text || '').trimStart();
+            const looksHtml = ct.includes('text/html')
+                || trimmed.startsWith('<!DOCTYPE')
+                || trimmed.startsWith('<html')
+                || trimmed.startsWith('<HTML');
+            if (looksHtml) {
+                return {
+                    ok: false,
+                    status: res.status,
+                    error: 'not a resource API (got HTML — likely SPA fallback)',
+                };
+            }
             let data = null;
-            try { data = text ? JSON.parse(text) : null; } catch (_) { data = { raw: text }; }
+            try {
+                data = text ? JSON.parse(text) : null;
+            } catch (_) {
+                return { ok: false, status: res.status, error: 'invalid JSON from resource API' };
+            }
             if (!res.ok) {
                 return { ok: false, status: res.status, error: formatError(data) || res.statusText, data };
             }
@@ -85,6 +101,22 @@ const ResourceApi = (() => {
         if (!cd) return 'report.csv';
         const m = /filename=\"?([^\";]+)\"?/i.exec(cd);
         return m ? m[1] : 'report.csv';
+    }
+
+    function isLiveHealth(res) {
+        return !!(res && res.ok && res.data && res.data.service === 'resource-api');
+    }
+
+    /** Accept a raw array or a wrapped `{ items|employees|allocations|projects }`. */
+    function asList(res) {
+        if (!res || !res.ok) return [];
+        const d = res.data;
+        if (Array.isArray(d)) return d;
+        if (d && Array.isArray(d.items)) return d.items;
+        if (d && Array.isArray(d.employees)) return d.employees;
+        if (d && Array.isArray(d.allocations)) return d.allocations;
+        if (d && Array.isArray(d.projects)) return d.projects;
+        return [];
     }
 
     async function health() { return request('/api/health'); }
@@ -293,7 +325,7 @@ const ResourceApi = (() => {
     }
 
     return {
-        enabled, health, syncProjects, importEmployees, dashboard,
+        enabled, isLiveHealth, asList, health, syncProjects, importEmployees, dashboard,
         listEmployees, getEmployee, patchEmployee, deleteEmployee,
         listAllocations, createAllocation, updateAllocation, releaseAllocation, allocationHistory,
         listProjects, createProject, updateProject, deleteProject,
