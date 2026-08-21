@@ -1,0 +1,34 @@
+# Atlas Resource Tracker — Blueprint
+# Dashboard: New → Blueprint → this repo (render.yaml at root)
+# Public URL expected: https://atlas-resource-api.onrender.com
+# If Render assigns a different hostname, update js/config.js RESOURCE_API.BASE_URL
+
+databases:
+  - name: atlas-resource-db
+    plan: free
+    databaseName: resource_tracker
+    user: atlas
+    postgresMajorVersion: "16"
+
+services:
+  - type: web
+    name: atlas-resource-api
+    runtime: python
+    plan: free
+    region: oregon
+    rootDir: services/resource-api
+    buildCommand: pip install -r requirements.txt
+    startCommand: python run.py
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.8"
+      - key: CORS_ORIGINS
+        value: https://atlas-qa.netlify.app,https://atlas-dashboard-vishnu.netlify.app,http://localhost:8083,http://127.0.0.1:8083
+      - key: DATABASE_URL
+        fromDatabase:
+          name: atlas-resource-db
+          property: connectionString
+      - key: RESOURCE_SERVICE_TOKEN
+        sync: false

@@ -40,14 +40,14 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title="Atlas Resource API", version="1.0.0", lifespan=lifespan)
 
 cfg = get_settings()
-if cfg.cors_origin_list:
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=cfg.cors_origin_list,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cfg.cors_origin_list,
+    allow_origin_regex=r"https://.*\.netlify\.app",
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 app.include_router(health.router, prefix=API_PREFIX)
 app.include_router(projects.router, prefix=API_PREFIX)

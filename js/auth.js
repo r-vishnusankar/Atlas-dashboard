@@ -62,12 +62,52 @@ const Auth = (() => {
         localStorage.setItem(RBAC_KEY, JSON.stringify(cfg));
     }
 
-    /** Merged live config: localStorage overrides > CONFIG defaults */
+    /**
+     * config.js is the source of truth for built-in users' workspace access.
+     * Settings used to persist Admin as ['streak'] and that snapshot then
+     * replaced CONFIG.USERS on every load — that is why Digital Marketing vanished.
+     */
+    function withFileWorkspaceAccess(users) {
+        const fileUsers = CONFIG.USERS || [];
+        return (users || []).map(su => {
+            const fu = fileUsers.find(u => u.id === su.id);
+            if (!fu) return su;
+            return Object.assign({}, su, { workspaces: fu.workspaces });
+        });
+    }
+
+    function migrateStaleWorkspaceAccess() {
+        const stored = loadRbacConfig();
+        if (!stored || !Array.isArray(stored.users)) return;
+        const users = withFileWorkspaceAccess(stored.users);
+        const changed = JSON.stringify(users.map(u => [u.id, u.workspaces]))
+            !== JSON.stringify(stored.users.map(u => [u.id, u.workspaces]));
+        if (changed) saveRbacConfig(Object.assign({}, stored, { users }));
+    }
+
+    migrateStaleWorkspaceAccess();
+
+    /** Merged live config: Settings may overlay name/pin; workspace access always comes from config.js. */
     function liveConfig() {
         const stored = loadRbacConfig();
+        const fileUsers = CONFIG.USERS || [];
+        const fileRoles = CONFIG.ROLES || {};
+        if (!stored || !stored.users) {
+            return { users: fileUsers, roles: stored && stored.roles ? stored.roles : fileRoles };
+        }
+        const storedById = new Map(stored.users.map(u => [u.id, u]));
+        const fileIds = new Set(fileUsers.map(u => u.id));
+        const users = fileUsers.map(fu => {
+            const su = storedById.get(fu.id);
+            if (!su) return fu;
+            return Object.assign({}, fu, su, { id: fu.id, role: fu.role, workspaces: fu.workspaces });
+        });
+        stored.users.forEach(su => {
+            if (su && su.id && !fileIds.has(su.id)) users.push(su);
+        });
         return {
-            users: stored && stored.users ? stored.users : (CONFIG.USERS || []),
-            roles: stored && stored.roles ? stored.roles : (CONFIG.ROLES || {}),
+            users,
+            roles: stored.roles || fileRoles,
         };
     }
 
@@ -117,7 +157,7 @@ const Auth = (() => {
 
         /** Save updated users + roles back to localStorage */
         saveSettings(users, roles) {
-            saveRbacConfig({ users, roles });
+            saveRbacConfig({ users: withFileWorkspaceAccess(users), roles });
             refreshSessionFromLiveConfig();
         },
 
@@ -182,13 +222,16 @@ const Auth = (() => {
 
         /** Returns list of workspace ids the current user can access */
         allowedWorkspaceIds() {
-            if (!CONFIG.RBAC_ENABLED) return (CONFIG.WORKSPACES || []).map(w => w.id);
+            const all = (CONFIG.WORKSPACES || []).map(w => w.id);
+            if (!CONFIG.RBAC_ENABLED) return all;
             const u = loadSession();
             if (!u) return [];
             const { users } = liveConfig();
             const userDef = users.find(x => x.id === u.id);
             if (!userDef) return [];
-            if (userDef.workspaces === '*') return (CONFIG.WORKSPACES || []).map(w => w.id);
+            if (userDef.role === 'admin' || userDef.workspaces === '*') return all;
+            const fileUser = (CONFIG.USERS || []).find(x => x.id === userDef.id);
+            if (fileUser && (fileUser.workspaces === '*' || fileUser.role === 'admin')) return all;
             return Array.isArray(userDef.workspaces) ? userDef.workspaces : [];
         },
 

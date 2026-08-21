@@ -20,7 +20,12 @@ const AppState = {
     },
 
     get activeSheetUrl() {
-        return (this.activeWorkspace && this.activeWorkspace.sheetUrl) || CONFIG.SHEET_CSV_URL || '';
+        const ws = this.activeWorkspace;
+        if (!ws) return CONFIG.SHEET_CSV_URL || '';
+        if (ws.integrationType === 'clickup' || ws.integrationType === 'zoho_timelog') {
+            return (ws.sheetUrl || '').trim();
+        }
+        return (ws.sheetUrl || CONFIG.SHEET_CSV_URL || '').trim();
     },
 
     setWorkspace(id) {
@@ -42,6 +47,9 @@ const AppState = {
     dataSource:  'sheets',  // 'sheets' | 'error'
     alerts:      { overdue:[], at_risk:[], upcoming:[], stalled:[] },
     _intelligence: null,
+    /** Intelligence tab + Delivery capacity — Team Allocation matching via Database roster. */
+    _intelligenceDelivery: null,
+    _resourceDeliveryMap: null,
     /** Resources page: 'delivery' (existing) | 'manager' (company roster tracker) */
     resourcesViewMode: (() => {
         const saved = localStorage.getItem('atlas_resources_view_mode');
@@ -55,6 +63,10 @@ const AppState = {
     resourceRoster: [],
     resourceRosterMeta: null,  // { loadedAt, source, error }
     resourceRosterStatus: 'idle', // idle | loading | ready | error
+    /** Team allocation name list — Database tab only (not Resource-management). */
+    databaseRoster: [],
+    databaseRosterMeta: null,
+    databaseRosterStatus: 'idle',
     resourceRosterFilter: '',
     resourceEmpDeptFilter: '',
     resourceEmpRoleFilter: '',
@@ -83,8 +95,12 @@ const AppState = {
     resourceSelectedProjectId: null,   // catalog row id (UUID)
     resourceSelectedProjectExternalId: null, // sheet external id when not yet in API
     resourceProjectPaneMode: 'empty', // empty | create | edit | detail
+    /** Projects tab full pages: list | detail | create (explicit; do not derive from selection). */
+    resourcesManagerProjectPage: 'list',
     resourceProjectForm: null,        // { id, externalId, name, client, releaseDate }
     resourceAllocDraft: null,         // { selectedEmployeeIds, allocationPct, projectRole, startDate, endDate, strict }
+    resourceAllocDrawerOpen: false,
+    resourceAllocShowAll: false,
     resourceProjectFilter: '',
     resourceProjectListView: 'active', // active | operational | recent | archived
     resourceProjectPage: 1,
@@ -96,6 +112,17 @@ const AppState = {
     resourceAllocListDeptFilter: '',
     resourceAllocListRoleFilter: '',
     resourceAllocListStatusFilter: '',
+
+    /** Team Allocation page (sibling sheet only) */
+    allocationView: 'people',   // people | projects | rows
+    allocationFilter: 'all',    // all | on_work | free
+    allocationSearch: '',
+
+    /** Intelligence → Team Availability card */
+    intelReleaseTab: (() => {
+        const saved = localStorage.getItem('atlas_intel_release_tab');
+        return saved === '30d' ? '30d' : 'now';
+    })(),
 
     pipelineMode:  'kanban',  // 'kanban' | 'timeline'
     timelineMode:  'gantt',   // 'gantt' | 'calendar'
@@ -191,6 +218,7 @@ const AppState = {
                 p.client.toLowerCase().includes(q) ||
                 p.owner.toLowerCase().includes(q)  ||
                 p.id.toLowerCase().includes(q)     ||
+                (p.website_url || '').toLowerCase().includes(q) ||
                 (p.tags || []).some(t => t.toLowerCase().includes(q))
             );
         }
@@ -283,6 +311,32 @@ const AppState = {
         return buildResourceMap(this.allProjects);
     },
 
+    /** Resources Delivery view — Team Allocation Match By Person + RI UI adapter. */
+    get resourceDeliveryMap() {
+        if (this._resourceDeliveryMap) return this._resourceDeliveryMap;
+        const roster = this.databaseRoster || [];
+        const ws = this.activeWorkspace;
+        const clickupFallback = typeof isContentCreatorWorkspace === 'function'
+            && isContentCreatorWorkspace(ws)
+            && typeof buildResourceMap === 'function';
+        if (!roster.length && clickupFallback) {
+            this._resourceDeliveryMap = buildResourceMap(this.allProjects);
+            return this._resourceDeliveryMap;
+        }
+        const alloc = this.siblingAllocation;
+        this._resourceDeliveryMap = typeof buildResourceMapFromPersonMatches === 'function'
+            ? buildResourceMapFromPersonMatches(alloc, this.allProjects)
+            : {};
+        return this._resourceDeliveryMap;
+    },
+
+    get siblingAllocation() {
+        const roster = this.databaseRoster || [];
+        return typeof buildSiblingAllocationData === 'function'
+            ? buildSiblingAllocationData(this.allProjects, roster)
+            : { rows: [], people: [], stats: {}, projectsActive: [], byProject: {} };
+    },
+
     get attentionRanked() {
         return this._intelligence?.attentionRanked ?? [];
     },
@@ -299,6 +353,52 @@ const AppState = {
         return this._intelligence?.intelligenceSummary ?? null;
     },
 
+    /**
+     * Resource & Capacity Intelligence — same Match By Person roster + Delivery matching
+     * as Team Allocation / Resources Delivery. Falls back to master-map intelligence until
+     * Database roster loads.
+     */
+    get deliveryIntelligence() {
+        if (this._intelligenceDelivery) return this._intelligenceDelivery;
+        const roster = this.databaseRoster || [];
+        if (!roster.length) {
+            if (typeof isContentCreatorWorkspace === 'function' && isContentCreatorWorkspace(this.activeWorkspace)
+                && typeof buildResourceMap === 'function') {
+                const resourceMap = buildResourceMap(this.allProjects);
+                this._intelligenceDelivery = typeof computeResourceIntelligenceWithMap === 'function'
+                    ? computeResourceIntelligenceWithMap(this.allProjects, this.alerts, resourceMap)
+                    : (this._intelligence || {});
+                return this._intelligenceDelivery;
+            }
+            return this._intelligence || {};
+        }
+        const resourceMap = typeof buildResourceMapFromPersonMatches === 'function'
+            ? buildResourceMapFromPersonMatches(this.siblingAllocation, this.allProjects)
+            : {};
+        this._intelligenceDelivery = typeof computeResourceIntelligenceWithMap === 'function'
+            ? computeResourceIntelligenceWithMap(this.allProjects, this.alerts, resourceMap)
+            : (this._intelligence || {});
+        return this._intelligenceDelivery;
+    },
+
+    get deliveryCapacityForecast() {
+        return this.deliveryIntelligence?.capacityForecast
+            ?? { roles: {}, summary: {}, horizons: [30, 60, 90] };
+    },
+
+    get deliveryIntelligenceSummary() {
+        return this.deliveryIntelligence?.intelligenceSummary ?? null;
+    },
+
+    get deliveryAttentionRanked() {
+        return this.deliveryIntelligence?.attentionRanked ?? [];
+    },
+
+    get deliveryIntakeRecommendation() {
+        return this.deliveryIntelligence?.intakeRecommendation
+            ?? { small: 0, medium: 0, large: 0, byHorizon: {} };
+    },
+
     // ── Mutations ──────────────────────────────
     setProjects(projects, source = 'sheets') {
         this.allProjects = projects;
@@ -309,9 +409,16 @@ const AppState = {
         this._intelligence = typeof computeResourceIntelligence === 'function'
             ? computeResourceIntelligence(this.allProjects, this.alerts)
             : null;
+        this.clearDerivedCaches();
         if (typeof Auth !== 'undefined' && Auth.invalidateLoginStatsCache) {
             Auth.invalidateLoginStatsCache();
         }
+    },
+
+    /** Drop in-memory derived maps (delivery intelligence, resource delivery). */
+    clearDerivedCaches() {
+        this._resourceDeliveryMap = null;
+        this._intelligenceDelivery = null;
     },
 
     setView(view) {
@@ -354,10 +461,43 @@ const AppState = {
         localStorage.setItem('atlas_resources_manager_tab', this.resourcesManagerTab);
     },
 
+    setResourcesManagerProjectPage(page) {
+        const ok = ['list', 'detail', 'create'];
+        this.resourcesManagerProjectPage = ok.includes(page) ? page : 'list';
+    },
+
+    setAllocationView(view) {
+        const ok = ['people', 'projects', 'rows'];
+        this.allocationView = ok.includes(view) ? view : 'people';
+        localStorage.setItem('atlas_allocation_view', this.allocationView);
+    },
+
+    setAllocationFilter(filter) {
+        const ok = ['all', 'on_work', 'free'];
+        this.allocationFilter = ok.includes(filter) ? filter : 'all';
+        localStorage.setItem('atlas_allocation_filter', this.allocationFilter);
+    },
+
+    setAllocationSearch(q) {
+        this.allocationSearch = String(q || '');
+    },
+
+    setIntelReleaseTab(tab) {
+        this.intelReleaseTab = tab === '30d' ? '30d' : 'now';
+        localStorage.setItem('atlas_intel_release_tab', this.intelReleaseTab);
+    },
+
     setResourceRoster(list, meta) {
         this.resourceRoster = Array.isArray(list) ? list : [];
         this.resourceRosterMeta = meta || null;
         this.resourceRosterStatus = meta?.error ? 'error' : (this.resourceRoster.length ? 'ready' : 'ready');
+    },
+
+    setDatabaseRoster(list, meta) {
+        this.databaseRoster = Array.isArray(list) ? list : [];
+        this.databaseRosterMeta = meta || null;
+        this.databaseRosterStatus = meta?.error ? 'error' : 'ready';
+        this.clearDerivedCaches();
     },
 
     hasActiveFilters() {

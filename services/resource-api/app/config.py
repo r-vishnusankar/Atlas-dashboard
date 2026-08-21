@@ -15,7 +15,10 @@ class Settings(BaseSettings):
 
     database_url: str = f"sqlite:///{(ROOT / 'resource_tracker.db').as_posix()}"
     resource_service_token: str = ""
-    cors_origins: str = "http://localhost:8083,http://127.0.0.1:8083"
+    cors_origins: str = (
+        "http://localhost:8083,http://127.0.0.1:8083,"
+        "https://atlas-qa.netlify.app,https://atlas-dashboard-vishnu.netlify.app"
+    )
     host: str = "127.0.0.1"
     port: int = 8090
 
@@ -32,6 +35,17 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def sqlalchemy_url(self) -> str:
+        """Render/Heroku give postgres://; SQLAlchemy 2 + psycopg3 want postgresql+psycopg://."""
+        url = (self.database_url or "").strip()
+        if url.startswith("postgres://"):
+            url = "postgresql://" + url[len("postgres://"):]
+        dialect = url.split("://", 1)[0]
+        if dialect == "postgresql":
+            url = "postgresql+psycopg://" + url[len("postgresql://"):]
+        return url
 
 
 @lru_cache

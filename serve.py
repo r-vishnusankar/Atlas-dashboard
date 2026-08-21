@@ -15,6 +15,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -37,6 +38,11 @@ try:
     from api import ai_insights
 except ImportError:
     ai_insights = None
+
+try:
+    from api import pagespeed as psi_api
+except ImportError:
+    psi_api = None
 
 
 def _resource_python() -> Path:
@@ -229,7 +235,8 @@ class AtlasHandler(http.server.SimpleHTTPRequestHandler):
             })
 
     def do_GET(self):
-        path = self.path.split("?", 1)[0]
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
         if path.startswith("/api/resource"):
             return self._proxy_resource_api()
         if path == "/api/ai/health":
@@ -237,6 +244,18 @@ class AtlasHandler(http.server.SimpleHTTPRequestHandler):
                 self._send_json(503, {"ok": False, "enabled": False, "error": "AI module unavailable"})
                 return
             self._send_json(200, ai_insights.health())
+            return
+        if path == "/api/psi":
+            if psi_api is None:
+                self._send_json(503, {"ok": False, "error": "PageSpeed module unavailable"})
+                return
+            qs = urllib.parse.parse_qs(parsed.query)
+            result = psi_api.run(
+                (qs.get("url") or [""])[0],
+                (qs.get("strategy") or ["mobile"])[0],
+            )
+            status = 200 if result.get("ok") else int(result.get("status") or 502)
+            self._send_json(status, result)
             return
         return super().do_GET()
 
@@ -290,7 +309,10 @@ def main():
     api_ok = start_resource_api()
     ai_status = "on" if ai_insights and ai_insights.is_configured() else "off (set GROQ_API_KEY in .env)"
     api_status = "on" if api_ok else "off (cd services/resource-api && python run.py)"
-    print(f"Serving on http://localhost:{port}  (no-cache · AI {ai_status} · Resource API {api_status})", flush=True)
+    psi_status = "on" if psi_api else "off"
+    if psi_api and psi_api.has_api_key():
+        psi_status = "on (key)"
+    print(f"Serving on http://localhost:{port}  (no-cache · AI {ai_status} · PSI {psi_status} · Resource API {api_status})", flush=True)
     if api_ok:
         print(f"  Resource proxy: http://localhost:{port}/api/resource/health -> {RESOURCE_API_UPSTREAM}/api/health", flush=True)
 

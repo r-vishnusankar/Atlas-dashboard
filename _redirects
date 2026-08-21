@@ -1,4 +1,5 @@
 # API routes first — then SPA fallback (order matters)
 /api/ai/health    /.netlify/functions/ai-health    200
 /api/ai/insights  /.netlify/functions/ai-insights  200
+/api/psi          /.netlify/functions/pagespeed    200
 /*                /index.html                       200

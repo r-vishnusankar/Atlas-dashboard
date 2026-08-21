@@ -117,6 +117,8 @@
   border-radius: 8px;
   padding: 4px;
   z-index: 200;
+  max-height: min(280px, calc(100vh - 220px));
+  overflow-y: auto;
   box-shadow: 0 8px 16px rgba(0,0,0,0.4), 0 2px 4px rgba(0,0,0,0.3);
   transform-origin: top center;
   animation: wsMenuIn 0.13s cubic-bezier(0.16,1,0.3,1) forwards;

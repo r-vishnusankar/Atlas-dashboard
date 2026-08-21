@@ -12,6 +12,8 @@
  * Sheet must have headers matching COLUMN_MAP (or the header aliases in data.js).
  * Optional on the **Project** tab: **detail_gid** (tab id for a sibling detail sheet) or
  * **detail_csv_url** (full published CSV URL to that tab; overrides detail_gid when set).
+ * Optional: **website_url** (live site) — Visit website + PageSpeed Insights (homepage by default).
+ * Optional: **preview_image** (image URL) — directory thumbnail; if empty, auto-screenshot from website_url.
  * ─────────────────────────────────────────────────────────
  */
 
@@ -37,7 +39,7 @@ const CONFIG = {
             actions: '*',   // export, refresh, switchWorkspace, theme
         },
         manager: {
-            views: ['overview', 'projects', 'pipeline', 'alerts', 'resources', 'timeline', 'analytics', 'intelligence', 'performance'],
+            views: ['overview', 'projects', 'pipeline', 'alerts', 'resources', 'allocation', 'timeline', 'analytics', 'intelligence', 'performance'],
             actions: ['export', 'refresh', 'switchWorkspace', 'theme'],
         },
         developer: {
@@ -77,9 +79,15 @@ const CONFIG = {
              * Company roster tab (Resource-management) — Manager view in Resources.
              * Publish that tab to web (CSV) in the same spreadsheet.
              */
+            /** Manager view roster (HR fields) — not used for Team allocation names. */
             resourceManagement: {
                 gid: '1655970411',
                 tabName: 'Resource-management',
+            },
+            /** Delivery name list — Developer / QA / BA columns (Team allocation). */
+            database: {
+                gid: '1554730418',
+                tabName: 'Database',
             },
         },
         {
@@ -94,7 +102,7 @@ const CONFIG = {
             displayName: 'Digital Marketing Dashboard',
             integrationType: 'clickup',
             clickupListId: '90166990133',
-            clickupToken: 'pk_101076116_FZ2GAK8V6OHUBNON5WCKM8FZE5EYQYDV',
+            clickupToken: 'pk_101076116_9NAQKT6UMHZGTSXGS3BBWCBM9RH4U5CH',
             sheetUrl: '',
             /**
              * People model: every ClickUp assignee is a Content Creator (no Dev/QA/BA).
@@ -206,6 +214,8 @@ const CONFIG = {
         completed_pages: 18, // S
         page_priority: 19, // T
         actual_live_date: 20, // U
+        website_url:      21, // V (optional; header aliases also match website / live_url)
+        preview_image:    22, // W (optional; manual thumbnail URL; else auto-screenshot)
     },
 
     // ── UI Preferences ──────────────────────────────────
@@ -282,6 +292,12 @@ const CONFIG = {
         CLICKUP_SUBTASK_ENRICH: true,
         /** Resource map from sibling tab rows (per-page Developer/QA/Page owner); master row fallback. */
         SIBLING_RESOURCE_MAP: true,
+        /** Directory thumbnails + Visit website from Project tab website_url. */
+        PROJECT_WEBSITE_PREVIEW: true,
+        /** PageSpeed Insights on the project page (homepage of website_url by default). */
+        PAGESPEED_INSIGHTS: true,
+        /** Auto/tab silent refresh repaints the current view. Off = fetch data only (no DOM swap / flicker). Manual Refresh always repaints. */
+        SILENT_REFRESH_REPAINT: false,
 
         // ── Audit fixes (2026-06-16) — set to false to revert individually ──
         /** Bug #1/#10: Only count sibling/subtask rows that have a non-blank progress value in avgPct.
@@ -344,15 +360,32 @@ const CONFIG = {
     },
 
     /**
+     * Google PageSpeed Insights — project page, homepage of website_url by default.
+     * Local: same-origin proxy via serve.py → /api/psi
+     * Optional PAGESPEED_API_KEY in .env raises Google quota; works without a key too.
+     */
+    PSI: {
+        API_BASE: '/api/psi',
+        GOOGLE_ENDPOINT: 'https://www.googleapis.com/pagespeedonline/v5/runPagespeed',
+        CACHE_TTL_MS: 3600000,
+        TIMEOUT_MS: 90000,
+        DEFAULT_STRATEGY: 'mobile',
+    },
+
+    /**
      * Resource Tracker API (Phase 0+).
-     * Default: same-origin proxy via serve.py → /api/resource/*
-     * Fallback direct: http://127.0.0.1:8090 if you run the API alone.
+     * Local: same-origin proxy via serve.py → /api/resource/*
+     * Production (Netlify): hosted Render service (cold start can take ~30–50s).
      */
     RESOURCE_API: {
         ENABLED: true,
-        BASE_URL: '/api/resource',
+        BASE_URL: (typeof location !== 'undefined' && /\.netlify\.app$/i.test(location.hostname))
+            ? 'https://atlas-resource-api.onrender.com'
+            : '/api/resource',
         TOKEN: '',  // match RESOURCE_SERVICE_TOKEN in services/resource-api/.env
-        TIMEOUT_MS: 12000,
+        TIMEOUT_MS: (typeof location !== 'undefined' && /\.netlify\.app$/i.test(location.hostname))
+            ? 60000
+            : 12000,
         /** Directors / leadership — never show on Bench or project assign pools. */
         NON_PROJECT_STAFF_NAMES: [
             'Ashish Thomas',
@@ -369,12 +402,42 @@ const CONFIG = {
     TEAM_NAME: 'Product & Engineering',
 };
 
-// Load workspaces from localStorage if present BEFORE freezing
+/**
+ * Merge file workspaces with Settings (localStorage).
+ * - Every workspace in config.js always appears (new ones cannot vanish).
+ * - Matching ids keep Settings field edits (token, sheet URL, name).
+ * - User-added workspaces (ids not in the file) are kept.
+ */
+function mergeConfigWorkspaces(fileList, storedList) {
+    const file = Array.isArray(fileList) ? fileList : [];
+    const stored = Array.isArray(storedList) ? storedList : [];
+    const storedById = new Map();
+    stored.forEach(w => { if (w && w.id) storedById.set(w.id, w); });
+    const fileIds = new Set(file.map(w => w.id));
+    const merged = file.map(fw => {
+        const sw = storedById.get(fw.id);
+        if (!sw) return fw;
+        // File keeps identity + integration; Settings may keep URL/token edits.
+        return Object.assign({}, fw, sw, {
+            id: fw.id,
+            integrationType: fw.integrationType || sw.integrationType,
+            clickupListId: fw.clickupListId || sw.clickupListId,
+            clickupToken: fw.clickupToken || sw.clickupToken,
+            sheetUrl: fw.sheetUrl || sw.sheetUrl,
+        });
+    });
+    stored.forEach(sw => {
+        if (sw && sw.id && !fileIds.has(sw.id)) merged.push(sw);
+    });
+    return merged;
+}
+
 try {
     const storedWorkspaces = localStorage.getItem('atlas_workspaces');
     if (storedWorkspaces) {
-        CONFIG.WORKSPACES = JSON.parse(storedWorkspaces);
+        CONFIG.WORKSPACES = mergeConfigWorkspaces(CONFIG.WORKSPACES, JSON.parse(storedWorkspaces));
     }
+    localStorage.setItem('atlas_workspaces', JSON.stringify(CONFIG.WORKSPACES));
 } catch (e) {
     console.error('[Atlas] Failed to load workspaces from localStorage:', e);
 }
@@ -385,6 +448,7 @@ Object.freeze(CONFIG.COLUMN_MAP);
 Object.freeze(CONFIG.ROLES);
 Object.freeze(CONFIG.FEATURE_FLAGS);
 Object.freeze(CONFIG.AI);
+Object.freeze(CONFIG.PSI);
 Object.freeze(CONFIG.ATTENTION_WEIGHTS);
 Object.freeze(CONFIG.CAPACITY);
 Object.freeze(CONFIG.INTAKE);

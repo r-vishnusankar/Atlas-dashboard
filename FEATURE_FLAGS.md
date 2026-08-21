@@ -24,6 +24,9 @@ All flags live in `js/config.js → CONFIG.FEATURE_FLAGS`. Set any to `false` to
 | `CLICKUP_DONE_STATUS` | `true` | ClickUp: COMPLETE/closed → Live, skip overdue alerts; go-live inferred from date_closed |
 | `CLICKUP_SUBTASK_ENRICH` | `true` | ClickUp: enrich tasks with subtasks → roadmap.pages (page-level funnel/analytics) |
 | `SIBLING_RESOURCE_MAP` | `true` | Resource map built from sibling tab rows (per-page Developer/QA/Page owner); master row fallback |
+| `PROJECT_WEBSITE_PREVIEW` | `true` | Directory thumbnails + Visit website. Uses Project tab `preview_image` when set; otherwise auto-screenshot of `website_url` |
+| `PAGESPEED_INSIGHTS` | `true` | Project page: Google PageSpeed Insights for the live site. Defaults to the homepage (`website_url`). Optional `PAGESPEED_API_KEY` in `.env` |
+| `SILENT_REFRESH_REPAINT` | `false` | Auto/tab silent refresh repaints the current view. Off = fetch sheet data only (sidebar counts update; no `#content-area` DOM swap). Manual Refresh always repaints |
 
 ---
 

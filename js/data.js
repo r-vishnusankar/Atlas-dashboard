@@ -60,6 +60,8 @@ function headerCellToField(key) {
         current_page:      ['current_page', 'current page'],
         detail_gid:        ['detail_gid', 'sibling_gid', 'tab_gid', 'project_tab_gid'],
         detail_csv_url:    ['detail_csv_url', 'sibling_csv_url', 'project_sibling_url'],
+        website_url:       ['website_url', 'website', 'live_url', 'site_url', 'project_url', 'live_site'],
+        preview_image:     ['preview_image', 'preview', 'thumbnail', 'thumb', 'og_image', 'site_image'],
     };
     for (const [field, list] of Object.entries(aliases)) {
         if (list.includes(key)) return field;
@@ -138,12 +140,14 @@ function parseCSV(csvText) {
         const rawProgressStr = (c('progress') || '').trim();
         const hasManualProgress = rawProgressStr !== '';
         const raw_progress = parseInt(rawProgressStr || '0', 10);
+        const rawStageCell = (c('stage') || '').trim() || 'Planning';
         const project = {
             id:           c('project_id') || `PRJ-${String(i).padStart(3,'0')}`,
             name:         c('project_name') || 'Unnamed Project',
             owner:        c('owner') || 'Unassigned',
             client:       c('client') || '—',
-            stage:        normalizeStage(c('stage') || 'Planning'),
+            rawStage:     rawStageCell,
+            stage:        normalizeStage(rawStageCell),
             status:       normalizeStatus(c('status') || 'on_track'),
             progress:     isNaN(raw_progress) ? 0 : Math.min(100, Math.max(0, raw_progress)),
             start_date:   c('start_date') || '',
@@ -161,6 +165,8 @@ function parseCSV(csvText) {
             current_page:   c('current_page') || '',
             detail_gid:     (c('detail_gid') || '').trim(),
             detail_csv_url: (c('detail_csv_url') || '').trim(),
+            website_url:    normalizeWebsiteUrl(c('website_url')),
+            preview_image:  normalizePreviewImageUrl(c('preview_image')),
             tags:         (c('tags') || '').split(',').map(t => t.trim()).filter(Boolean),
             notes:        c('notes') || '',
         };
@@ -198,6 +204,59 @@ function parseCSVLine(line) {
     return result;
 }
 
+/**
+ * Allow only http(s) site URLs from the Project tab. Adds https:// when missing.
+ */
+function normalizeWebsiteUrl(raw) {
+    const t = String(raw || '').trim();
+    if (!t || isPlaceholderDate(t)) return '';
+    let candidate = t;
+    if (!/^https?:\/\//i.test(candidate)) candidate = 'https://' + candidate;
+    try {
+        const u = new URL(candidate);
+        if (u.protocol !== 'http:' && u.protocol !== 'https:') return '';
+        if (!u.hostname || u.hostname === 'localhost') return '';
+        return u.href;
+    } catch (_) {
+        return '';
+    }
+}
+
+function websiteHostname(url) {
+    try {
+        return new URL(url).hostname.replace(/^www\./i, '');
+    } catch (_) {
+        return '';
+    }
+}
+
+function websitePreviewSrc(url) {
+    const clean = normalizeWebsiteUrl(url);
+    if (!clean) return '';
+    return `https://s.wordpress.com/mshots/v1/${encodeURIComponent(clean)}?w=800`;
+}
+
+/** Manual thumbnail from sheet (http(s) or Google Drive file link). */
+function normalizePreviewImageUrl(raw) {
+    const t = String(raw || '').trim();
+    if (!t || isPlaceholderDate(t)) return '';
+    const drive = t.match(/drive\.google\.com\/file\/d\/([^/?]+)/i);
+    if (drive) return `https://drive.google.com/thumbnail?id=${encodeURIComponent(drive[1])}&sz=w800`;
+    const driveOpen = t.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+    if (/drive\.google\.com/i.test(t) && driveOpen) {
+        return `https://drive.google.com/thumbnail?id=${encodeURIComponent(driveOpen[1])}&sz=w800`;
+    }
+    if (/^https?:\/\//i.test(t)) return t;
+    return '';
+}
+
+/** Card thumbnail: preview_image if set, else auto-screenshot of website_url. */
+function projectThumbSrc(project) {
+    const preview = normalizePreviewImageUrl(project?.preview_image);
+    if (preview) return preview;
+    return websitePreviewSrc(project?.website_url);
+}
+
 function normalizePagePriority(s) {
     const t = String(s || '').trim();
     if (/^p[0-2]$/i.test(t)) return t.charAt(0).toUpperCase() + t.charAt(1).toLowerCase();
@@ -207,11 +266,13 @@ function normalizePagePriority(s) {
 function normalizeStage(s) {
     const raw = (s || '').trim();
     const low = raw.toLowerCase();
-    const m = { 'backlog':'Backlog','not started':'Backlog','queued':'Backlog','todo':'Backlog','planning':'Planning','development':'Development','dev':'Development','qa':'QA','testing':'QA','streak_qa':'QA','streak - qa':'QA','release':'Release','staging':'Release','live':'Live','done':'Live','completed':'Live' };
+    const m = { 'backlog':'Backlog','not started':'Backlog','queued':'Backlog','todo':'Backlog','planning':'Planning','development':'Development','dev':'Development','qa':'QA','testing':'QA','streak_qa':'QA','streak - qa':'QA','release':'Release','staging':'Release','ready for live':'Release','live':'Live','done':'Live','completed':'Live' };
     if (m[low]) return m[low];
 
     // Underscores in sheet values (e.g. Streak_QA) — treat like spaces for token matching
     const seg = low.replace(/_/g, ' ');
+
+    if (/ready\s*for\s*live/.test(seg)) return 'Release';
 
     // Composite stages (e.g. "Streak -Dev, Live", "Streak_QA", "Live -CR") — active phase wins
     const hasQa      = /\bqa\b/.test(seg) || seg.includes('testing') || /streak\s*[-–]?\s*qa/.test(seg);
@@ -273,51 +334,383 @@ function isValidResourceName(name) {
     return !['unassigned', '—', '-', 'none', 'n/a', 'na', 'tbd', 'null', 'nil'].includes(low);
 }
 
-/** UI labels for resource availability (popover, cards, suggestions) */
+/** Assignments that drive Free vs On work (sibling tab when present, else project fallback). */
+function getAvailabilityAssignments(person) {
+    const all = person.assignments || [];
+    const sibling = all.filter(a => a.source === 'sibling');
+    const pool = sibling.length ? sibling : all;
+    return pool.filter(a => !a.completed);
+}
+
+/** Active sibling pages for subtitle (release_date from Delivery tab). */
+function getActiveSiblingPages(person) {
+    const pages = [];
+    (person.assignments || [])
+        .filter(a => a.source === 'sibling' && !a.completed)
+        .forEach(a => {
+            (a.siblingPages || []).filter(p => !p.completed).forEach(p => pages.push(p));
+        });
+    return pages;
+}
+
+function formatReleaseSubtitle(pages, today) {
+    if (!pages.length) return '';
+    const t = today ? startOfDay(today) : startOfDay(new Date());
+    const sorted = [...pages].sort((a, b) => {
+        const da = a.releaseDate ? parseSmartDate(a.releaseDate) : null;
+        const db = b.releaseDate ? parseSmartDate(b.releaseDate) : null;
+        const ma = da && !isNaN(da.getTime()) ? startOfDay(da).getTime() : 9e15;
+        const mb = db && !isNaN(db.getTime()) ? startOfDay(db).getTime() : 9e15;
+        return ma - mb;
+    });
+    const p = sorted[0];
+    const pageName = p.page || 'Page';
+    if (!p.releaseDate || isPlaceholderDate(p.releaseDate)) {
+        return `${pageName} · release TBD`;
+    }
+    const d = startOfDay(parseSmartDate(p.releaseDate));
+    if (isNaN(d.getTime())) return `${pageName} · release TBD`;
+    const short = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    const overdue = d.getTime() < t.getTime();
+    const suffix = overdue ? ' · overdue' : '';
+    if (pages.length > 1) {
+        return `${pageName} · release ${short}${suffix} (+${pages.length - 1} more)`;
+    }
+    return `${pageName} · release ${short}${suffix}`;
+}
+
+function formatFallbackAvailabilitySubtitle(activeAssignments, today) {
+    const a = activeAssignments[0];
+    if (!a) return '';
+    const name = a.projectName || 'Project';
+    if (a.end && !isNaN(a.end.getTime())) {
+        const short = a.end.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        const overdue = startOfDay(a.end).getTime() < startOfDay(today).getTime();
+        return `${name} · release ${short}${overdue ? ' · overdue' : ''}`;
+    }
+    return `${name} · release TBD`;
+}
+
+/** UI labels for resource availability — two states: Free vs On work (sibling-first). */
 function getResourceAvailability(person, today) {
     const t = today ? startOfDay(today) : startOfDay(new Date());
-    const hasActive = person.activeCount > 0;
-    const activeAssignments = (person.assignments || []).filter(a => !a.completed);
+    const active = getAvailabilityAssignments(person);
+    const hasSibling = (person.assignments || []).some(a => a.source === 'sibling');
 
-    if (!person.freeFrom) {
-        if (hasActive) {
-            // Distinguish "deadline passed but not Live" (overdue, still engaged) from
-            // simply "no release date set yet" (unknown).
-            const allDated = activeAssignments.length
-                && activeAssignments.every(a => a.end && !isNaN(a.end.getTime()));
-            if (featureOn('RESOURCE_FREE_FROM_FIX') && allDated) {
-                const maxEndMs = Math.max(...activeAssignments.map(a => startOfDay(a.end).getTime()));
-                if (maxEndMs < t.getTime()) {
-                    return {
-                        label: `Overdue · ${person.activeCount} project${person.activeCount !== 1 ? 's' : ''}`,
-                        chipClass: 'res-free-chip--tbd',
-                        popClass: 'res-pop-chip--tbd',
-                        status: 'overdue',
-                    };
+    if (!active.length) {
+        return {
+            label: 'Free',
+            chipClass: 'res-free-chip--now',
+            popClass: 'res-pop-chip--now',
+            status: 'free',
+            subtitle: '',
+        };
+    }
+
+    const siblingPages = hasSibling ? getActiveSiblingPages(person) : [];
+    const subtitle = siblingPages.length
+        ? formatReleaseSubtitle(siblingPages, t)
+        : formatFallbackAvailabilitySubtitle(active, t);
+
+    return {
+        label: 'On work',
+        chipClass: 'res-free-chip--work',
+        popClass: 'res-pop-chip--work',
+        status: 'on_work',
+        subtitle,
+    };
+}
+
+/**
+ * Team Allocation Match By Person — shared matching core (Database roster + Delivery rows).
+ * One sheet row → assignments from Developer, QA, page_owner columns.
+ * Stage Live = done; otherwise On work for that row.
+ */
+function computeSiblingPersonMatches(projects, rosterEmployees) {
+    const roster = uniqueRosterEmployees(rosterEmployees);
+    const resolveName = buildRosterNameResolver(roster);
+    const peopleMap = {};
+
+    roster.forEach(emp => {
+        const name = String(emp.name || '').trim();
+        if (!name) return;
+        peopleMap[name] = { name, rows: [], activeRows: [], fromRoster: true };
+    });
+
+    const rows = [];
+    const projectsList = Array.isArray(projects) ? projects : [];
+    let projectsWithSibling = 0;
+
+    projectsList.forEach(p => {
+        if (!p.roadmap?.hasSibling || !Array.isArray(p.roadmap.assignments)) return;
+        projectsWithSibling += 1;
+        p.roadmap.assignments.forEach(sa => {
+            splitAssigneeNames(sa.person).forEach(rawPerson => {
+                if (!isValidResourceName(rawPerson)) return;
+                const person = resolveName(rawPerson);
+                rows.push({
+                    projectId:   p.id,
+                    projectName: p.name || p.id,
+                    page:        sa.page || '—',
+                    person,
+                    role:        sa.role,
+                    stage:       sa.stage || '',
+                    status:      sa.status || '',
+                    startDate:   sa.start || '',
+                    releaseDate: sa.end || '',
+                    completed:   !!sa.completed,
+                    active:      !sa.completed,
+                });
+            });
+        });
+    });
+
+    const peopleMapFromRows = {};
+    rows.forEach(r => {
+        if (!peopleMapFromRows[r.person]) {
+            peopleMapFromRows[r.person] = { name: r.person, rows: [], activeRows: [] };
+        }
+        peopleMapFromRows[r.person].rows.push(r);
+        if (r.active) peopleMapFromRows[r.person].activeRows.push(r);
+    });
+
+    Object.entries(peopleMapFromRows).forEach(([name, data]) => {
+        if (!peopleMap[name]) return;
+        peopleMap[name].rows = peopleMap[name].rows.concat(data.rows);
+        peopleMap[name].activeRows = peopleMap[name].activeRows.concat(data.activeRows);
+    });
+
+    const people = Object.values(peopleMap).map(p => ({
+        ...p,
+        status: p.activeRows.length ? 'on_work' : 'free',
+        activeProjectCount: new Set(p.activeRows.map(r => r.projectId)).size,
+    })).sort((a, b) => {
+        if (a.status !== b.status) return a.status === 'on_work' ? -1 : 1;
+        return a.name.localeCompare(b.name);
+    });
+
+    return { rows, people, peopleMap, projectsWithSibling };
+}
+
+function buildSiblingAllocationData(projects, rosterEmployees) {
+    const { rows, people, projectsWithSibling } = computeSiblingPersonMatches(projects, rosterEmployees);
+
+    const byProject = {};
+    rows.forEach(r => {
+        if (!byProject[r.projectId]) {
+            byProject[r.projectId] = {
+                id: r.projectId,
+                name: r.projectName,
+                rows: [],
+                activeRows: [],
+                people: new Set(),
+            };
+        }
+        byProject[r.projectId].rows.push(r);
+        if (r.active) {
+            byProject[r.projectId].activeRows.push(r);
+            byProject[r.projectId].people.add(r.person);
+        }
+    });
+
+    const projectsActive = Object.values(byProject)
+        .filter(p => p.activeRows.length)
+        .map(p => ({
+            id: p.id,
+            name: p.name,
+            activeRows: p.activeRows,
+            people: [...p.people].sort((a, b) => a.localeCompare(b)),
+            rowCount: p.activeRows.length,
+        }))
+        .sort((a, b) => b.rowCount - a.rowCount || a.name.localeCompare(b.name));
+
+    const stats = {
+        onWork: people.filter(p => p.status === 'on_work').length,
+        free: people.filter(p => p.status === 'free').length,
+        totalPeople: people.length,
+        activeRows: rows.filter(r => r.active).length,
+        totalRows: rows.length,
+        projectsWithSibling,
+        projectsWithActiveWork: projectsActive.length,
+    };
+
+    return { rows, people, stats, projectsActive, byProject };
+}
+
+/** Conflicts, freeFrom, activeCount — shared by buildResourceMap and delivery adapter. */
+function applyResourceMapDerivedFields(map) {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    Object.values(map || {}).forEach(person => {
+        const active = (person.assignments || []).filter(a => !a.completed);
+        person.activeCount = new Set(active.map(a => a.projectId)).size;
+
+        const byProject = {};
+        active.forEach(a => {
+            if (!a.start || !a.end) return;
+            const cur = byProject[a.projectId];
+            if (!cur) {
+                byProject[a.projectId] = { ...a };
+                return;
+            }
+            if (a.start < cur.start) cur.start = a.start;
+            if (a.end > cur.end) cur.end = a.end;
+        });
+        const windows = Object.values(byProject);
+
+        person.conflicts = person.conflicts || [];
+        for (let i = 0; i < windows.length; i++) {
+            for (let j = i + 1; j < windows.length; j++) {
+                const a = windows[i], b = windows[j];
+                if (a.projectId === b.projectId) continue;
+                if (a.start <= b.end && a.end >= b.start) {
+                    const overlapStart = a.start > b.start ? a.start : b.start;
+                    const overlapEnd   = a.end   < b.end   ? a.end   : b.end;
+                    const overlapDays  = Math.max(0, Math.round((overlapEnd - overlapStart) / 86400000));
+                    if (overlapDays > 0) {
+                        person.conflicts.push({
+                            projectA:    a.projectName,
+                            projectIdA:  a.projectId,
+                            roleA:       a.role,
+                            projectB:    b.projectName,
+                            projectIdB:  b.projectId,
+                            roleB:       b.role,
+                            overlapDays,
+                            overlapStart,
+                            overlapEnd,
+                        });
+                    }
                 }
             }
-            return { label: 'Release date TBD', chipClass: 'res-free-chip--tbd', popClass: 'res-pop-chip--tbd', status: 'unknown' };
         }
-        if (person.assignments && person.assignments.length) {
-            return { label: 'Available now', chipClass: 'res-free-chip--now', popClass: 'res-pop-chip--now', status: 'now' };
+
+        if (!active.length) {
+            person.freeFrom = (person.assignments || []).length ? new Date(today) : null;
+        } else {
+            const allDated = active.every(a => a.end && !isNaN(a.end.getTime()));
+            if (allDated) {
+                const maxEndMs = Math.max(...active.map(a => startOfDay(a.end).getTime()));
+                if (featureOn('RESOURCE_FREE_FROM_FIX')) {
+                    person.freeFrom = maxEndMs < today.getTime()
+                        ? null
+                        : startOfDay(new Date(maxEndMs));
+                } else {
+                    person.freeFrom = startOfDay(new Date(maxEndMs));
+                }
+            } else {
+                person.freeFrom = null;
+            }
         }
-        return { label: 'No date set', chipClass: '', popClass: '', status: 'none' };
-    }
+    });
 
-    const ff = startOfDay(person.freeFrom);
-    if (!hasActive) {
-        return { label: 'Available now', chipClass: 'res-free-chip--now', popClass: 'res-pop-chip--now', status: 'now' };
-    }
+    return map;
+}
 
-    if (ff <= t) {
-        return { label: 'Available now', chipClass: 'res-free-chip--now', popClass: 'res-pop-chip--now', status: 'now' };
-    }
-    const days = Math.ceil((ff - t) / 86400000);
-    if (days <= 14) {
-        return { label: `Free in ${days}d`, chipClass: 'res-free-chip--soon', popClass: 'res-pop-chip--soon', status: 'soon', days };
-    }
-    const short = ff.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-    return { label: `Free ${short}`, chipClass: '', popClass: '', status: 'future', days };
+/**
+ * Adapt Team Allocation Match By Person → resourceMap shape for Resources Delivery UI.
+ * Matching rules identical to computeSiblingPersonMatches; this only shapes data for RI widgets.
+ */
+function buildResourceMapFromPersonMatches(allocationData, projects) {
+    const map = {};
+    const projectById = {};
+    (projects || []).forEach(p => { projectById[p.id] = p; });
+
+    (allocationData?.people || []).forEach(p => {
+        map[p.name] = {
+            name: p.name,
+            assignments: [],
+            activeCount: 0,
+            conflicts: [],
+            freeFrom: null,
+        };
+    });
+
+    (allocationData?.people || []).forEach(p => {
+        const person = map[p.name];
+        if (!person) return;
+
+        const merged = {};
+        (p.rows || []).forEach(r => {
+            const key = `${r.projectId}|${r.role}`;
+            const cur = merged[key] || (merged[key] = {
+                projectId: r.projectId,
+                projectName: r.projectName,
+                role: r.role,
+                pages: 0,
+                activePages: 0,
+                start: null,
+                endActive: null,
+                endDone: null,
+                allDone: true,
+                stage: r.stage,
+                pagesList: [],
+                status: 'on_track',
+            });
+            cur.pages += 1;
+            cur.pagesList.push({
+                page: r.page,
+                releaseDate: r.releaseDate,
+                stage: r.stage,
+                completed: r.completed,
+            });
+            const start = r.startDate ? parseSmartDate(r.startDate) : null;
+            if (start && !isNaN(start.getTime()) && (!cur.start || startOfDay(start) < cur.start)) {
+                cur.start = startOfDay(start);
+            }
+            const end = r.releaseDate ? parseSmartDate(r.releaseDate) : null;
+            const endOk = end && !isNaN(end.getTime()) ? startOfDay(end) : null;
+            if (r.completed) {
+                if (endOk && (!cur.endDone || endOk > cur.endDone)) cur.endDone = endOk;
+            } else {
+                cur.allDone = false;
+                cur.activePages += 1;
+                cur.stage = r.stage;
+                if (endOk && (!cur.endActive || endOk > cur.endActive)) cur.endActive = endOk;
+            }
+            const st = normalizeStatus(r.status);
+            if (st === 'delayed') cur.status = 'delayed';
+            else if (st === 'at_risk' && cur.status !== 'delayed') cur.status = 'at_risk';
+        });
+
+        Object.values(merged).forEach(m => {
+            const completed = m.allDone;
+            let end = completed ? (m.endDone || m.endActive) : m.endActive;
+            const proj = projectById[m.projectId];
+            if (!end && proj) {
+                const pe = projectAssignmentEnd(proj);
+                if (pe && !isNaN(pe.getTime())) end = pe;
+            }
+            let start = m.start;
+            if (!start && proj?.start_date) {
+                const ps = parseSmartDate(proj.start_date);
+                if (ps && !isNaN(ps.getTime())) start = startOfDay(ps);
+            }
+            person.assignments.push({
+                projectId:   m.projectId,
+                projectName: m.projectName,
+                role:        m.role,
+                start:       start && !isNaN(start.getTime()) ? start : null,
+                end:         end && !isNaN(end.getTime()) ? startOfDay(end) : null,
+                status:      m.status,
+                stage:       completed ? 'Live' : (m.stage || normalizeStage(proj?.stage || '')),
+                completed,
+                pages:       m.pages,
+                activePages: m.activePages,
+                siblingPages: m.pagesList,
+                source:      'sibling',
+            });
+        });
+    });
+
+    return applyResourceMapDerivedFields(map);
+}
+
+function formatAllocReleaseDate(raw) {
+    if (!raw || isPlaceholderDate(raw)) return 'TBD';
+    const d = parseSmartDate(raw);
+    if (isNaN(d.getTime())) return String(raw);
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 function normalizeStatus(s) {
     const raw = String(s || '').trim();
@@ -465,8 +858,7 @@ function computeAlerts(projects) {
     projects.forEach(p => {
         if (p.stage === 'Live') return;
         if (featureOn('CLICKUP_DONE_STATUS') && p.clickupComplete) return;
-
-        const postLive = typeof projectIsPostLive === 'function' && projectIsPostLive(p, today);
+        if (typeof getProjectLifecycle === 'function' && getProjectLifecycle(p).phase === 'post_live') return;
 
         const release = p.release_date ? parseSmartDate(p.release_date) : null;
         const start   = p.start_date ? parseSmartDate(p.start_date) : null;
@@ -476,9 +868,7 @@ function computeAlerts(projects) {
         const enriched = { ...p, daysToRelease: daysToRelease ?? null };
 
         if (hasRelease && daysToRelease < 0) {
-            if (!postLive) {
-                overdue.push({ ...enriched, daysOverdue: Math.abs(daysToRelease) });
-            }
+            overdue.push({ ...enriched, daysOverdue: Math.abs(daysToRelease) });
         } else {
             const releaseSoon = daysToRelease !== null && daysToRelease <= threshold && daysToRelease >= 0;
             const pred = computeCompletionPrediction(p, today);
@@ -496,7 +886,6 @@ function computeAlerts(projects) {
                 featureOn('AT_RISK_ZERO_PROGRESS')
                 && projectDisplayProgress(p) <= 0
                 && releaseSoon
-                && !postLive
             ) {
                 at_risk.push({
                     ...enriched,
@@ -505,7 +894,7 @@ function computeAlerts(projects) {
                     target: release,
                     predProgress: 0,
                 });
-            } else if (releaseSoon && !postLive) {
+            } else if (releaseSoon) {
                 upcoming.push(enriched);
             }
         }
@@ -657,6 +1046,45 @@ function clickUpAllAssigneeNames(assignees) {
 
 function isClickUpWorkspace(ws) {
     return !!(ws && ws.integrationType === 'clickup');
+}
+
+/**
+ * Digital Marketing / ClickUp — people roster from task + subtask assignees
+ * when no Database Google Sheet is configured for the workspace.
+ */
+function buildClickUpAssigneeRoster(projects, ws) {
+    const workspace = ws || (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
+    const role = getContentCreatorRoleName(workspace);
+    const seen = new Set();
+    const employees = [];
+
+    function add(name) {
+        const trimmed = String(name || '').trim();
+        if (!isValidResourceName(trimmed)) return;
+        const key = normalizePersonKey(trimmed);
+        if (!key || seen.has(key)) return;
+        seen.add(key);
+        employees.push({
+            id: `cu-${key.replace(/\s+/g, '-')}`,
+            name: trimmed,
+            nameKey: key,
+            department: '—',
+            designation: '—',
+            roleFamily: role,
+            intelRoles: [role],
+            fromClickUp: true,
+        });
+    }
+
+    (projects || []).forEach(p => {
+        splitAssigneeNames(p.developer).forEach(add);
+        splitAssigneeNames(p.owner).forEach(add);
+        (p.roadmap?.assignments || []).forEach(sa => {
+            splitAssigneeNames(sa.person).forEach(add);
+        });
+    });
+
+    return employees.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /**
@@ -877,6 +1305,8 @@ function mapClickUpTaskToProject(task, ws) {
     let notes = task.description || '';
     let tags = (task.tags || []).map(t => t.name || t);
     let customHealth = '';
+    let website_url = '';
+    let preview_image = '';
 
     if (creatorMode) {
         // All ClickUp assignees are Content Creators — store joined names in developer
@@ -919,6 +1349,10 @@ function mapClickUpTaskToProject(task, ws) {
                 actual_live_date = String(val);
             } else if (fname === 'status' || fname === 'health') {
                 customHealth = String(val);
+            } else if (fname === 'website' || fname === 'websiteurl' || fname === 'liveurl' || fname === 'siteurl' || fname === 'projecturl') {
+                website_url = String(val);
+            } else if (fname === 'previewimage' || fname === 'preview' || fname === 'thumbnail' || fname === 'ogimage') {
+                preview_image = String(val);
             }
         });
     }
@@ -969,6 +1403,8 @@ function mapClickUpTaskToProject(task, ws) {
         current_page: '',
         detail_gid: '',
         detail_csv_url: '',
+        website_url: normalizeWebsiteUrl(website_url),
+        preview_image: normalizePreviewImageUrl(preview_image),
         notes,
         tags,
         hasManualProgress: true,
@@ -1116,11 +1552,9 @@ function getClickUpMockData() {
 async function loadProjects(sheetUrl) {
     const ws = (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
     const urlArg = String(sheetUrl || '').trim();
-    // Explicit published-sheet URL always loads CSV (login stats / forced sheet), even if
-    // AppState.activeWorkspace is ClickUp/Zoho from a previous session.
-    const forceSheet = !!urlArg && (/docs\.google\.com/i.test(urlArg) || /[?&]output=csv\b/i.test(urlArg));
 
-    if (!forceSheet && ws.integrationType === 'clickup') {
+    // ClickUp workspace must not fall through to the Streak SHEET_CSV_URL.
+    if (ws.integrationType === 'clickup') {
         console.log(`[Atlas] Loading ClickUp workspace: ${ws.name}`);
         const tasks = await loadClickUpTasks(ws.clickupListId, ws.clickupToken);
         const projects = tasks.map(t => mapClickUpTaskToProject(t, ws));
@@ -1181,6 +1615,122 @@ function normalizePersonKey(name) {
         .trim();
 }
 
+/** Prefer the longer / more complete display name when merging aliases. */
+function pickPersonDisplayName(a, b) {
+    const ta = String(a || '').trim();
+    const tb = String(b || '').trim();
+    if (!ta) return tb;
+    if (!tb) return ta;
+    const at = normalizePersonKey(ta).split(' ').filter(Boolean);
+    const bt = normalizePersonKey(tb).split(' ').filter(Boolean);
+    return bt.length > at.length ? tb : ta;
+}
+
+/** True when two normalized name keys refer to the same person (abbreviated vs full name). */
+function personNameTokens(key) {
+    return String(key || '').split(' ').filter(t => t.length > 0);
+}
+
+/** Shorter name is an exact token-prefix of longer (min 2 tokens); never merge first-name-only. */
+function personKeysSoftMatch(ak, bk) {
+    if (!ak || !bk) return false;
+    if (ak === bk) return true;
+    const at = personNameTokens(ak);
+    const bt = personNameTokens(bk);
+    function isTokenSubset(sub, sup) {
+        if (sub.length < 2 || sub.length >= sup.length) return false;
+        for (let i = 0; i < sub.length; i++) {
+            if (sub[i] !== sup[i]) return false;
+        }
+        return true;
+    }
+    return isTokenSubset(at, bt) || isTokenSubset(bt, at);
+}
+
+function personNamesSoftMatch(a, b) {
+    return personKeysSoftMatch(normalizePersonKey(a), normalizePersonKey(b));
+}
+
+/** One row per person when the same person appears with spacing variants. */
+function uniqueRosterEmployees(employees) {
+    const byCompact = new Map();
+    (employees || []).forEach(emp => {
+        const name = String(emp.name || '').trim();
+        if (!name) return;
+        const compact = normalizePersonKey(name).replace(/\s+/g, '');
+        if (!compact) return;
+        const cur = byCompact.get(compact);
+        if (!cur) {
+            byCompact.set(compact, { ...emp, name });
+            return;
+        }
+        cur.name = pickPersonDisplayName(cur.name, name);
+    });
+    return [...byCompact.values()];
+}
+
+/** Match Delivery-tab spelling → exact Name from Database sheet. */
+function buildRosterNameResolver(employees) {
+    const entries = uniqueRosterEmployees(employees)
+        .map(emp => String(emp.name || '').trim())
+        .filter(Boolean)
+        .map(exact => ({
+            exact,
+            key: normalizePersonKey(exact),
+            compact: normalizePersonKey(exact).replace(/\s+/g, ''),
+        }));
+
+    return function resolveDeliveryName(raw) {
+        const trimmed = String(raw || '').trim();
+        if (!trimmed || !entries.length) return trimmed;
+        const key = normalizePersonKey(trimmed);
+        const compact = key.replace(/\s+/g, '');
+
+        for (const e of entries) {
+            if (e.key === key) return e.exact;
+        }
+        for (const e of entries) {
+            if (e.compact && e.compact === compact) return e.exact;
+        }
+        for (const e of entries) {
+            if (personKeysSoftMatch(key, e.key)) return e.exact;
+        }
+        return trimmed;
+    };
+}
+
+/** Merge duplicate person entries that differ only by name spelling / length. */
+function consolidateResourceMapPeople(map) {
+    const names = Object.keys(map);
+    const used = new Set();
+    names.forEach(name => {
+        if (used.has(name)) return;
+        const group = [name];
+        used.add(name);
+        const nk = normalizePersonKey(name);
+        names.forEach(other => {
+            if (used.has(other)) return;
+            if (personKeysSoftMatch(nk, normalizePersonKey(other))) {
+                group.push(other);
+                used.add(other);
+            }
+        });
+        if (group.length <= 1) return;
+        const canonical = group.reduce((best, n) => pickPersonDisplayName(best, n), group[0]);
+        const merged = map[canonical] || {
+            name: canonical, assignments: [], activeCount: 0, conflicts: [], freeFrom: null,
+        };
+        merged.name = canonical;
+        group.forEach(n => {
+            if (n === canonical || !map[n]) return;
+            merged.assignments.push(...map[n].assignments);
+            merged.conflicts.push(...map[n].conflicts);
+            delete map[n];
+        });
+        map[canonical] = merged;
+    });
+}
+
 /** Guess role family from designation / department for capacity caps. */
 function roleFamilyFromDesignation(designation, department) {
     const d = `${designation || ''} ${department || ''}`.toLowerCase();
@@ -1208,6 +1758,70 @@ function getResourceManagementSheetUrl(ws) {
     const base = w.sheetUrl || CONFIG.SHEET_CSV_URL || '';
     if (cfg.gid) return buildDetailSheetCsvUrl(cfg.gid, base) || '';
     return '';
+}
+
+function getDatabaseSheetConfig(ws) {
+    const w = ws || (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
+    return w.database || CONFIG.DATABASE || null;
+}
+
+function getDatabaseSheetUrl(ws) {
+    const cfg = getDatabaseSheetConfig(ws);
+    if (!cfg) return '';
+    if (cfg.csvUrl) return String(cfg.csvUrl).trim();
+    const w = ws || (typeof AppState !== 'undefined' && AppState.activeWorkspace) || {};
+    const base = w.sheetUrl || CONFIG.SHEET_CSV_URL || '';
+    if (cfg.gid) return buildDetailSheetCsvUrl(cfg.gid, base) || '';
+    return '';
+}
+
+/**
+ * Parse Database tab — unique people from Developer, QA, Project Owner - BA, Marketing/SEO columns.
+ * Each person carries intelRoles[] for capacity / intake pools.
+ */
+function parseDatabaseSheetCSV(csvText) {
+    const table = parseGenericTableCSV(csvText);
+    const headers = table.headers || [];
+    const hlist = headers.map(h => normalizeHeaderForMatch(h));
+    const roleColumns = [
+        { idx: findSiblingCol(hlist, ['developer', 'dev']), role: 'Developer' },
+        { idx: findSiblingCol(hlist, ['qa', 'qa_engineer', 'q_a']), role: 'QA' },
+        { idx: findSiblingCol(hlist, ['project owner - ba', 'project_owner_-_ba', 'page_owner', 'ba']), role: 'BA' },
+        { idx: findSiblingCol(hlist, ['marketing/seo', 'marketing_seo', 'marketing', 'seo']), role: 'Page owner' },
+    ].filter(rc => rc.idx >= 0);
+
+    const byKey = new Map();
+    roleColumns.forEach(({ idx, role }) => {
+        (table.rows || []).forEach(row => {
+            const raw = roadmapCell(row, idx);
+            splitAssigneeNames(raw).forEach(name => {
+                const trimmed = String(name || '').trim();
+                if (!isValidResourceName(trimmed)) return;
+                const key = normalizePersonKey(trimmed);
+                if (!key) return;
+                let emp = byKey.get(key);
+                if (!emp) {
+                    emp = {
+                        id: `db-${key.replace(/\s+/g, '-')}`,
+                        name: trimmed,
+                        nameKey: key,
+                        department: '—',
+                        designation: '—',
+                        roleFamily: role === 'Developer' ? 'Developer' : role,
+                        intelRoles: new Set(),
+                        fromDatabase: true,
+                    };
+                    byKey.set(key, emp);
+                }
+                emp.intelRoles.add(role);
+                if (role === 'Developer') emp.roleFamily = 'Developer';
+            });
+        });
+    });
+
+    return [...byKey.values()]
+        .map(e => ({ ...e, intelRoles: [...e.intelRoles].sort() }))
+        .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /**
@@ -1275,15 +1889,9 @@ function enrichResourceRoster(employees, resourceMap) {
     return (employees || []).map(emp => {
         let person = byKey[emp.nameKey];
         if (!person) {
-            // soft match: first+last token containment
-            const tokens = emp.nameKey.split(' ').filter(Boolean);
-            person = Object.values(map).find(p => {
-                const pk = normalizePersonKey(p.name);
-                if (!pk) return false;
-                if (pk === emp.nameKey) return true;
-                if (tokens.length >= 2 && tokens.every(t => pk.includes(t))) return true;
-                return false;
-            }) || null;
+            person = Object.values(map).find(p =>
+                personNamesSoftMatch(emp.name, p.name)
+            ) || null;
         }
 
         const activeCount = person ? (person.activeCount || 0) : 0;
@@ -1384,6 +1992,32 @@ async function loadResourceManagementRoster(ws) {
         };
     } catch (e) {
         return { employees: [], meta: { error: e.message || 'Failed to load Resource-management sheet.' } };
+    }
+}
+
+async function loadDatabaseSheetRoster(ws) {
+    const url = getDatabaseSheetUrl(ws);
+    if (!url) {
+        return { employees: [], meta: { error: 'Database sheet not configured for this workspace.' } };
+    }
+    try {
+        const response = await fetch(sheetFetchUrl(url), SHEET_FETCH_OPTIONS);
+        if (!response.ok) {
+            return { employees: [], meta: { error: `HTTP ${response.status} loading Database sheet.` } };
+        }
+        const employees = parseDatabaseSheetCSV(await response.text());
+        const cfg = getDatabaseSheetConfig(ws) || {};
+        return {
+            employees,
+            meta: {
+                loadedAt: new Date().toISOString(),
+                source: cfg.tabName || 'Database',
+                count: employees.length,
+                url,
+            },
+        };
+    } catch (e) {
+        return { employees: [], meta: { error: e.message || 'Failed to load Database sheet.' } };
     }
 }
 
@@ -1544,8 +2178,7 @@ function computeSiblingAssignments(hlist, rows) {
         if (!row.some(cell => cell && String(cell).trim())) return;
         const rawStage = idxStage >= 0 ? roadmapCell(row, idxStage) : '';
         const stage = normalizeStage(rawStage);
-        const low = rawStage.toLowerCase();
-        const rowDone = stage === 'Live' || low.includes('live') || low.includes('done') || low.includes('completed');
+        const rowDone = stage === 'Live';
         const base = {
             page:   roadmapCell(row, ti),
             stage,
@@ -2439,6 +3072,135 @@ async function enrichProjectsWithSiblingMetrics(projects, sheetBaseUrl) {
 }
 
 /* ──────────────────────────────────────────
+   PROJECT LIFECYCLE (raw stage — source of truth for overdue)
+────────────────────────────────────────── */
+
+function canonicalizeRawStage(raw) {
+    return String(raw || '').trim().toLowerCase().replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/** Explicit post-Go-Live stages from the Project / Delivery sheets (raw values only). */
+function isPostGoLiveRawStage(raw) {
+    const s = canonicalizeRawStage(raw);
+    if (!s) return false;
+    if (/hyper\s*[-–]?\s*care|hypercare/.test(s)) return true;
+    if (/^hot\s*[-–]?\s*fix\b/.test(s)) return true;
+    if (/^live\s*[-–]?\s*cr\b/.test(s) || s === 'live cr') return true;
+    if (s === 'live') return true;
+    if (/live/.test(s) && /hyper/.test(s)) return true;
+    return false;
+}
+
+function postGoLiveDisplayLabel(raw) {
+    const s = canonicalizeRawStage(raw);
+    if (/hyper/.test(s)) return 'Live / Hypercare';
+    if (/hot\s*[-–]?\s*fix/.test(s)) return 'Live / Hot-Fix';
+    if (/live\s*[-–]?\s*cr/.test(s) || s === 'live cr') return 'Live / CR';
+    return 'Live';
+}
+
+function preLiveDisplayLabel(raw) {
+    const s = canonicalizeRawStage(raw);
+    if (!s) return '—';
+    if (s === 'planning') return 'Planning';
+    if (/story/.test(s) && /req/.test(s)) return 'Story / Requirements';
+    if (/ui/.test(s) && /dev/.test(s)) return 'UI Development';
+    if (/streak/.test(s) && /dev/.test(s)) return 'Development';
+    if ((/streak/.test(s) && /qa/.test(s)) || s === 'qa') return 'QA';
+    if (/^hold\b/.test(s)) return 'Hold';
+    return String(raw || '').trim() || '—';
+}
+
+function postGoLiveRank(raw) {
+    const s = canonicalizeRawStage(raw);
+    if (/hyper/.test(s)) return 4;
+    if (/hot\s*[-–]?\s*fix/.test(s)) return 3;
+    if (/live\s*[-–]?\s*cr/.test(s) || s === 'live cr') return 2;
+    return 1;
+}
+
+function pickStrongestPostGoLiveRaw(rawStages) {
+    let best = '';
+    let bestRank = 0;
+    (rawStages || []).forEach(raw => {
+        if (!isPostGoLiveRawStage(raw)) return;
+        const rank = postGoLiveRank(raw);
+        if (rank > bestRank) {
+            bestRank = rank;
+            best = String(raw || '').trim();
+        }
+    });
+    return best;
+}
+
+function isPlaceholderPageName(page) {
+    const t = String(page || '').trim();
+    return !t || /^(-|—|tbd|n\/a)$/i.test(t);
+}
+
+/** Named, non-empty Delivery rows — same spirit as sibling page parsing. */
+function getRelevantDeliveryPages(project) {
+    const pages = project?.roadmap?.pages;
+    if (!Array.isArray(pages)) return [];
+    return pages.filter(pg => !isPlaceholderPageName(pg?.page));
+}
+
+/**
+ * Project lifecycle from raw master stage + relevant Delivery page raw stages.
+ * POST-LIVE projects are never overdue based on original release_date alone.
+ */
+function getProjectLifecycle(project) {
+    const masterRaw = String(project?.rawStage ?? project?.stage ?? '').trim();
+
+    if (isPostGoLiveRawStage(masterRaw)) {
+        return {
+            phase: 'post_live',
+            source: 'master',
+            rawStage: masterRaw,
+            displayLabel: postGoLiveDisplayLabel(masterRaw),
+            isOverdueEligible: false,
+        };
+    }
+
+    const relevant = getRelevantDeliveryPages(project);
+    if (!relevant.length) {
+        return {
+            phase: 'pre_live',
+            source: 'master',
+            rawStage: masterRaw,
+            displayLabel: preLiveDisplayLabel(masterRaw),
+            isOverdueEligible: true,
+        };
+    }
+
+    const classified = relevant.map(pg => {
+        const raw = String(pg?.rawStage ?? pg?.stage ?? '').trim();
+        return { raw, postLive: raw ? isPostGoLiveRawStage(raw) : false };
+    });
+    const allPostLive = classified.every(x => x.postLive);
+    const anyPostLive = classified.some(x => x.postLive);
+
+    if (allPostLive) {
+        const strongest = pickStrongestPostGoLiveRaw(classified.map(x => x.raw));
+        return {
+            phase: 'post_live',
+            source: 'delivery_fallback',
+            rawStage: strongest || masterRaw,
+            displayLabel: postGoLiveDisplayLabel(strongest || masterRaw),
+            isOverdueEligible: false,
+        };
+    }
+
+    return {
+        phase: 'pre_live',
+        source: anyPostLive ? 'delivery_mixed' : 'master',
+        rawStage: masterRaw,
+        displayLabel: preLiveDisplayLabel(masterRaw),
+        isOverdueEligible: true,
+    };
+}
+
+/* ──────────────────────────────────────────
    FEATURE FLAGS & POST-LIVE DATE HELPERS
 ────────────────────────────────────────── */
 function featureOn(key) {
@@ -2448,13 +3210,13 @@ function featureOn(key) {
 }
 
 function projectIsPostLive(project, today) {
-    return featureOn('POST_LIVE_DATE_RULES') && hasPastGoLive(project, today);
+    if (!featureOn('POST_LIVE_DATE_RULES')) return false;
+    return getProjectLifecycle(project).phase === 'post_live';
 }
 
-/** Shipped UX: Live stage or post-live CR/hypercare with past actual_live_date. */
+/** Shipped UX: explicit post-go-live lifecycle stages. */
 function projectCountsAsShipped(project, today) {
-    if (normalizeStage(project?.stage || '') === 'Live') return true;
-    return projectIsPostLive(project, today);
+    return getProjectLifecycle(project).phase === 'post_live';
 }
 
 /** Recently Live / insights badge — avoids misleading early/late vs updated CR release_date. */
@@ -2561,6 +3323,16 @@ function startOfDay(d) {
     return x;
 }
 
+/** Local YYYY-MM-DD (no UTC shift). */
+function formatDateIsoLocal(d) {
+    if (!d || isNaN(d.getTime())) return null;
+    const x = startOfDay(d);
+    const y = x.getFullYear();
+    const m = String(x.getMonth() + 1).padStart(2, '0');
+    const day = String(x.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+}
+
 /** Google Sheets / Excel serial (days since 1899-12-30). */
 function parseSheetsSerial(n) {
     const whole = Math.floor(n);
@@ -2625,18 +3397,11 @@ function isValidParsedDate(str) {
 }
 
 /**
- * Go-live already happened (actual_live_date on or before today).
- * Ignores pre-filled live dates on active Dev/Planning rows (common sheet mistake).
+ * Post-go-live lifecycle (raw stage driven). actual_live_date is metadata only.
  */
 function hasPastGoLive(project, today) {
-    if (!isValidParsedDate(project.actual_live_date)) return false;
-    const live = startOfDay(parseSmartDate(project.actual_live_date));
-    const t    = today ? startOfDay(today) : startOfDay(new Date());
-    if (live > t) return false;
-    if (project.stage === 'Live') return true;
-    // Post-live CR / hypercare (e.g. "Live -CR" → normalized Release)
-    if (project.stage === 'Release') return true;
-    return false;
+    if (!featureOn('POST_LIVE_DATE_RULES')) return false;
+    return getProjectLifecycle(project).phase === 'post_live';
 }
 
 /** Overview "Upcoming Launches" — target release in the next N days, not yet Live. */
@@ -2652,15 +3417,43 @@ function qualifiesAsUpcomingLaunch(project, today, windowDays) {
     return rel >= t && rel <= end;
 }
 
-/** Overview "Recently Live" — shipped in the last N days. */
+/** Overview live panel — post-go-live lifecycle projects visible on Overview. */
 function qualifiesAsRecentlyLive(project, today, windowDays) {
+    const lc = typeof getProjectLifecycle === 'function' ? getProjectLifecycle(project) : null;
+    if (!lc || lc.phase !== 'post_live') return false;
+
+    const raw = canonicalizeRawStage(lc.rawStage);
+    // Active post-go-live support — always show (e.g. Hyper-Care without master actual_live_date).
+    if (/hyper|hot\s*[-–]?\s*fix|live\s*[-–]?\s*cr/.test(raw)) return true;
+
+    const relevant = getRelevantDeliveryPages(project);
+    if (!isValidParsedDate(project.actual_live_date)
+        && relevant.length > 0
+        && relevant.every(pg => {
+            const rs = String(pg?.rawStage ?? pg?.stage ?? '').trim();
+            return rs && isPostGoLiveRawStage(rs);
+        })) {
+        return true;
+    }
+
+    if (!isValidParsedDate(project.actual_live_date)) return false;
+
     const days = windowDays ?? (CONFIG.RECENTLY_LIVE_DAYS ?? 90);
-    if (!hasPastGoLive(project, today)) return false;
     const t    = today ? startOfDay(today) : startOfDay(new Date());
     const live = startOfDay(parseSmartDate(project.actual_live_date));
     const cutoff = new Date(t);
     cutoff.setDate(t.getDate() - days);
     return live >= cutoff;
+}
+
+function overviewLiveSortTime(project) {
+    if (isValidParsedDate(project?.actual_live_date)) {
+        return parseSmartDate(project.actual_live_date).getTime();
+    }
+    if (isValidParsedDate(project?.release_date)) {
+        return parseSmartDate(project.release_date).getTime();
+    }
+    return 0;
 }
 
 /**
@@ -2679,7 +3472,7 @@ function computeOverviewDateMetrics(projects, today) {
 
     const recentlyLive = list
         .filter(p => qualifiesAsRecentlyLive(p, t, liveLookback))
-        .sort((a, b) => parseSmartDate(b.actual_live_date) - parseSmartDate(a.actual_live_date));
+        .sort((a, b) => overviewLiveSortTime(b) - overviewLiveSortTime(a));
 
     const in14 = new Date(t);
     in14.setDate(t.getDate() + 14);
@@ -2805,9 +3598,50 @@ function projectAssignmentEnd(project) {
  */
 function buildResourceMap(projects) {
     const map = {};
+    const nameRegistry = {};
 
-    function ensurePerson(n) {
+    function resolvePersonName(raw) {
+        const trimmed = String(raw || '').trim();
+        const key = normalizePersonKey(trimmed);
+        if (!key) return trimmed;
+
+        for (const [ek, canonical] of Object.entries(nameRegistry)) {
+            if (personKeysSoftMatch(key, ek)) {
+                const best = pickPersonDisplayName(canonical, trimmed);
+                nameRegistry[key] = best;
+                nameRegistry[ek] = best;
+                nameRegistry[normalizePersonKey(best)] = best;
+                if (best !== canonical) {
+                    if (map[canonical] && map[best]) {
+                        map[best].assignments.push(...map[canonical].assignments);
+                        map[best].conflicts.push(...map[canonical].conflicts);
+                        delete map[canonical];
+                    } else if (map[canonical] && !map[best]) {
+                        map[best] = map[canonical];
+                        map[best].name = best;
+                        delete map[canonical];
+                    }
+                }
+                return best;
+            }
+        }
+        nameRegistry[key] = trimmed;
+        return trimmed;
+    }
+
+    function isPersonCovered(name, coveredSet) {
+        if (!coveredSet || !coveredSet.size) return false;
+        const key = normalizePersonKey(name);
+        for (const c of coveredSet) {
+            if (personKeysSoftMatch(key, normalizePersonKey(c))) return true;
+        }
+        return false;
+    }
+
+    function ensurePerson(rawName) {
+        const n = resolvePersonName(rawName);
         if (!map[n]) map[n] = { name: n, assignments: [], activeCount: 0, conflicts: [], freeFrom: null };
+        else map[n].name = n;
         return map[n];
     }
 
@@ -2815,15 +3649,15 @@ function buildResourceMap(projects) {
         if (!isValidResourceName(name)) return;
         splitAssigneeNames(name).forEach(n => {
             if (!isValidResourceName(n)) return;
-            if (excludeSet && excludeSet.has(n)) return;
-            ensurePerson(n);
+            if (isPersonCovered(n, excludeSet)) return;
+            const person = ensurePerson(n);
 
             const stageNorm = normalizeStage(project.stage || '');
             const completed = projectAssignmentCompleted(project);
             const start     = project.start_date ? parseSmartDate(project.start_date) : null;
             const end       = projectAssignmentEnd(project);
 
-            map[n].assignments.push({
+            person.assignments.push({
                 projectId:   project.id,
                 projectName: project.name,
                 role,
@@ -2850,8 +3684,15 @@ function buildResourceMap(projects) {
                 const cur = merged[key] || (merged[key] = {
                     name: n, role: sa.role, pages: 0, activePages: 0,
                     start: null, endActive: null, endDone: null, allDone: true, stage: sa.stage,
+                    pagesList: [],
                 });
                 cur.pages += 1;
+                cur.pagesList.push({
+                    page:        sa.page,
+                    releaseDate: sa.end,
+                    stage:       sa.stage,
+                    completed:   sa.completed,
+                });
                 const start = sa.start ? parseSmartDate(sa.start) : null;
                 if (start && !isNaN(start.getTime()) && (!cur.start || start < cur.start)) cur.start = startOfDay(start);
                 const end = sa.end ? parseSmartDate(sa.end) : null;
@@ -2872,8 +3713,9 @@ function buildResourceMap(projects) {
         const covered = new Set();
 
         Object.values(merged).forEach(m => {
-            covered.add(m.name);
-            ensurePerson(m.name);
+            const canonical = resolvePersonName(m.name);
+            covered.add(canonical);
+            const person = ensurePerson(m.name);
             // Page-level stage is the source of truth: a person is only done when ALL
             // their pages are Live. A Live master row does NOT free someone who still
             // has pages in Dev/QA (e.g. a post-live CR with new pages in progress).
@@ -2882,7 +3724,7 @@ function buildResourceMap(projects) {
             if (!end) end = projEnd && !isNaN(projEnd.getTime()) ? projEnd : null;
             let start = m.start || (projStart && !isNaN(projStart.getTime()) ? startOfDay(projStart) : null);
 
-            map[m.name].assignments.push({
+            person.assignments.push({
                 projectId:   project.id,
                 projectName: project.name,
                 role:        m.role,
@@ -2891,9 +3733,10 @@ function buildResourceMap(projects) {
                 status:      project.status,
                 stage:       completed ? 'Live' : (m.stage || normalizeStage(project.stage || '')),
                 completed,
-                pages:       m.pages,
-                activePages: m.activePages,
-                source:      'sibling',
+                pages:        m.pages,
+                activePages:  m.activePages,
+                siblingPages: m.pagesList || [],
+                source:       'sibling',
             });
         });
         return covered;
@@ -2940,75 +3783,9 @@ function buildResourceMap(projects) {
         }
     });
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    consolidateResourceMapPeople(map);
 
-    Object.values(map).forEach(person => {
-        const active = person.assignments.filter(a => !a.completed);
-        person.activeCount = new Set(active.map(a => a.projectId)).size;
-
-        // One timeline window per project (earliest start → latest end) for conflict checks
-        const byProject = {};
-        active.forEach(a => {
-            if (!a.start || !a.end) return;
-            const cur = byProject[a.projectId];
-            if (!cur) {
-                byProject[a.projectId] = { ...a };
-                return;
-            }
-            if (a.start < cur.start) cur.start = a.start;
-            if (a.end > cur.end) cur.end = a.end;
-        });
-        const windows = Object.values(byProject);
-
-        for (let i = 0; i < windows.length; i++) {
-            for (let j = i + 1; j < windows.length; j++) {
-                const a = windows[i], b = windows[j];
-                if (a.projectId === b.projectId) continue;
-                if (a.start <= b.end && a.end >= b.start) {
-                    const overlapStart = a.start > b.start ? a.start : b.start;
-                    const overlapEnd   = a.end   < b.end   ? a.end   : b.end;
-                    const overlapDays  = Math.max(0, Math.round((overlapEnd - overlapStart) / 86400000));
-                    if (overlapDays > 0) {
-                        person.conflicts.push({
-                            projectA:    a.projectName,
-                            projectIdA:  a.projectId,
-                            roleA:       a.role,
-                            projectB:    b.projectName,
-                            projectIdB:  b.projectId,
-                            roleB:       b.role,
-                            overlapDays,
-                            overlapStart,
-                            overlapEnd,
-                        });
-                    }
-                }
-            }
-        }
-
-        // Free when every active project has an end date; date = latest end.
-        if (!active.length) {
-            if (person.assignments.length) person.freeFrom = new Date(today);
-        } else {
-            const allDated = active.every(a => a.end && !isNaN(a.end.getTime()));
-            if (allDated) {
-                const maxEndMs = Math.max(...active.map(a => startOfDay(a.end).getTime()));
-                if (featureOn('RESOURCE_FREE_FROM_FIX')) {
-                    // A passed release_date on a non-Live page means the work is overdue,
-                    // not finished — the person is still engaged with no known free date.
-                    person.freeFrom = maxEndMs < today.getTime()
-                        ? null
-                        : startOfDay(new Date(maxEndMs));
-                } else {
-                    person.freeFrom = startOfDay(new Date(maxEndMs));
-                }
-            } else {
-                person.freeFrom = null;
-            }
-        }
-    });
-
-    return map;
+    return applyResourceMapDerivedFields(map);
 }
 
 /* ──────────────────────────────────────────
@@ -3046,6 +3823,7 @@ function getActiveIntakeConfig() {
  */
 function computeAttentionScore(project, alerts, resourceMap, today) {
     if (!intelligenceEnabled()) return null;
+    if (typeof getProjectLifecycle === 'function' && getProjectLifecycle(project).phase === 'post_live') return null;
     if (normalizeStage(project?.stage || '') === 'Live') return null;
 
     const w = getAttentionWeights();
@@ -3146,10 +3924,43 @@ function weekStartMonday(d) {
     return x;
 }
 
+/** Roles this person counts toward for Intelligence capacity (Database columns + delivery assignments). */
+function getPersonIntelRoles(person, intelRoles, rosterByName) {
+    const roles = new Set();
+    (person?.assignments || []).forEach(a => {
+        if (a.role && intelRoles.includes(a.role)) roles.add(a.role);
+    });
+    const emp = rosterByName?.[person?.name] || rosterByName?.[normalizePersonKey(person?.name || '')];
+    if (emp?.intelRoles) {
+        emp.intelRoles.forEach(r => { if (intelRoles.includes(r)) roles.add(r); });
+    }
+    return roles;
+}
+
+/** Active assignment periods overlapping a calendar week (dated rows only). */
+function countRoleOverlapInWeek(person, role, weekStart, weekEnd) {
+    let overlap = 0;
+    (person?.assignments || []).forEach(a => {
+        if (a.completed || a.role !== role) return;
+        if (!a.start || !a.end || isNaN(a.start.getTime()) || isNaN(a.end.getTime())) return;
+        if (a.start <= weekEnd && a.end >= weekStart) overlap += 1;
+    });
+    return overlap;
+}
+
+function buildRosterByName(rosterEmployees) {
+    const map = {};
+    (rosterEmployees || []).forEach(emp => {
+        if (emp.name) map[emp.name] = emp;
+        if (emp.nameKey) map[emp.nameKey] = emp;
+    });
+    return map;
+}
+
 /**
  * Role-based utilization forecast for next ~90 days (13 weekly buckets).
  */
-function computeRoleCapacityForecast(projects, resourceMap, horizons) {
+function computeRoleCapacityForecast(projects, resourceMap, horizons, rosterEmployees) {
     if (!intelligenceEnabled()) return { roles: {}, summary: {}, horizons: horizons || [30, 60, 90] };
 
     const today = startOfDay(new Date());
@@ -3163,13 +3974,17 @@ function computeRoleCapacityForecast(projects, resourceMap, horizons) {
     }
 
     const intelRoles = typeof getIntelRoles === 'function' ? getIntelRoles() : INTEL_ROLES;
+    const rosterByName = buildRosterByName(
+        rosterEmployees
+        || (typeof AppState !== 'undefined' ? AppState.databaseRoster : null)
+        || []
+    );
     const rolePeople = {};
     intelRoles.forEach(role => { rolePeople[role] = new Set(); });
 
-    Object.values(resourceMap).forEach(person => {
-        person.assignments.forEach(a => {
-            if (a.completed) return;
-            if (intelRoles.includes(a.role)) rolePeople[a.role].add(person.name);
+    Object.values(resourceMap || {}).forEach(person => {
+        getPersonIntelRoles(person, intelRoles, rosterByName).forEach(role => {
+            rolePeople[role].add(person.name);
         });
     });
 
@@ -3177,6 +3992,40 @@ function computeRoleCapacityForecast(projects, resourceMap, horizons) {
     let benchRiskWeeks = 0;
     let shortageWeeks = 0;
     const freeingNext30 = [];
+    const freeNow = [];
+
+    function releaseRoles(person) {
+        const active = [...new Set((person.assignments || []).filter(a => !a.completed).map(a => a.role))];
+        if (active.length) return active;
+        const any = [...new Set((person.assignments || []).map(a => a.role).filter(Boolean))];
+        return any.length ? any : ['—'];
+    }
+
+    const cut30 = today.getTime() + 30 * 86400000;
+    Object.values(resourceMap).forEach(person => {
+        const activeCount = person.activeCount || 0;
+        if (activeCount === 0) {
+            freeNow.push({
+                name: person.name,
+                freeFrom: formatDateIsoLocal(today),
+                roles: releaseRoles(person),
+                activeCount: 0,
+            });
+            return;
+        }
+        if (!person.freeFrom || isNaN(person.freeFrom.getTime())) return;
+        const ff = startOfDay(person.freeFrom).getTime();
+        if (ff >= today.getTime() && ff <= cut30) {
+            freeingNext30.push({
+                name: person.name,
+                freeFrom: formatDateIsoLocal(person.freeFrom),
+                roles: releaseRoles(person),
+                activeCount,
+            });
+        }
+    });
+    freeNow.sort((a, b) => a.name.localeCompare(b.name));
+    freeingNext30.sort((a, b) => (a.freeFrom || '').localeCompare(b.freeFrom || '') || a.name.localeCompare(b.name));
 
     intelRoles.forEach(role => {
         const names = [...rolePeople[role]];
@@ -3192,16 +4041,7 @@ function computeRoleCapacityForecast(projects, resourceMap, horizons) {
             names.forEach(name => {
                 const person = resourceMap[name];
                 if (!person) return;
-                let overlap = 0;
-                person.assignments.forEach(a => {
-                    if (a.completed || a.role !== role) return;
-                    if (!a.start || !a.end) {
-                        overlap = Math.max(overlap, person.activeCount);
-                        return;
-                    }
-                    if (a.start <= weekEnd && a.end >= weekStart) overlap += 1;
-                });
-                const distinct = overlap || (person.activeCount > 0 ? person.activeCount : 0);
+                const distinct = countRoleOverlapInWeek(person, role, weekStart, weekEnd);
                 const util = Math.min(100, Math.round((distinct / max) * 100));
                 if (distinct === 0) freeHeadcount += 1;
                 else {
@@ -3228,28 +4068,13 @@ function computeRoleCapacityForecast(projects, resourceMap, horizons) {
         roles[role] = { weeks: weekRows, maxPerPerson: max, people: names };
     });
 
-    const cut30 = today.getTime() + 30 * 86400000;
-    Object.values(resourceMap).forEach(person => {
-        if (!person.freeFrom && person.activeCount > 0) return;
-        const ff = person.freeFrom ? person.freeFrom.getTime() : today.getTime();
-        if (ff <= cut30) {
-            const rolesOn = [...new Set(person.assignments.filter(a => !a.completed).map(a => a.role))];
-            freeingNext30.push({
-                name: person.name,
-                freeFrom: person.freeFrom ? person.freeFrom.toISOString().slice(0, 10) : today.toISOString().slice(0, 10),
-                roles: rolesOn.length ? rolesOn : ['—'],
-                activeCount: person.activeCount,
-            });
-        }
-    });
-    freeingNext30.sort((a, b) => (a.freeFrom || '').localeCompare(b.freeFrom || ''));
-
     return {
         roles,
         horizons: horizons || [30, 60, 90],
         summary: {
             benchRiskWeeks,
             shortageWeeks,
+            freeNow: freeNow.slice(0, 50),
             freeingNext30: freeingNext30.slice(0, 20),
             avgUtilizationPct: _avgUtilAcrossRoles(roles),
         },
@@ -3283,7 +4108,7 @@ function _avgUtilAcrossRoles(roles) {
  * 4. Slots = floor(minFree / headsRequired). If the heatmap is fully booked (0 free
  *    every week), intake is 0.
  */
-function computeBusinessIntakeCapacity(resourceMap, capacityForecast) {
+function computeBusinessIntakeCapacity(resourceMap, capacityForecast, rosterEmployees) {
     if (!intelligenceEnabled()) {
         return {
             small: 0, medium: 0, large: 0,
@@ -3296,7 +4121,32 @@ function computeBusinessIntakeCapacity(resourceMap, capacityForecast) {
     const intake = (ws.intake && typeof ws.intake === 'object') ? ws.intake : (CONFIG.INTAKE || {});
     const intelRoles = typeof getIntelRoles === 'function' ? getIntelRoles(ws) : INTEL_ROLES;
     const primaryRole = typeof getPrimaryWorkRole === 'function' ? getPrimaryWorkRole(ws) : 'Developer';
+    const rosterByName = buildRosterByName(rosterEmployees || (typeof AppState !== 'undefined' ? AppState.databaseRoster : []) || []);
     const byHorizon = { 30: {}, 60: {}, 90: {} };
+
+    function peopleInRolePool(role) {
+        const fromForecast = capacityForecast?.roles?.[role]?.people;
+        if (Array.isArray(fromForecast) && fromForecast.length) return fromForecast;
+        return Object.values(resourceMap || {})
+            .filter(p => getPersonIntelRoles(p, intelRoles, rosterByName).has(role))
+            .map(p => p.name);
+    }
+
+    /** Person has zero dated assignment overlap in role for every week through horizonDays. */
+    function personFreeForHorizon(name, role, horizonDays) {
+        const person = resourceMap[name];
+        if (!person) return false;
+        const weekCount = Math.max(1, Math.ceil(horizonDays / 7));
+        for (let i = 0; i < weekCount; i++) {
+            const wsDay = new Date(today);
+            wsDay.setDate(wsDay.getDate() + i * 7);
+            const weekStart = weekStartMonday(wsDay);
+            const weekEnd = new Date(weekStart);
+            weekEnd.setDate(weekEnd.getDate() + 6);
+            if (countRoleOverlapInWeek(person, role, weekStart, weekEnd) > 0) return false;
+        }
+        return true;
+    }
 
     /** Free people in a role for the full horizon — min weekly freeHeadcount from forecast. */
     function freeAcrossHorizon(role, horizonDays) {
@@ -3306,26 +4156,7 @@ function computeBusinessIntakeCapacity(resourceMap, capacityForecast) {
             const slice = weeks.slice(0, n);
             return Math.min(...slice.map(w => Number(w.freeHeadcount) || 0));
         }
-        // Fallback when forecast missing: people with no active work in this role now,
-        // or known freeFrom within the horizon (not completed-only ghosts).
-        const cut = today.getTime() + horizonDays * 86400000;
-        let n = 0;
-        Object.values(resourceMap || {}).forEach(person => {
-            const activeInRole = (person.assignments || []).filter(a => !a.completed && a.role === role);
-            if (!activeInRole.length) {
-                // Only count if they appear on the role roster (have this role on any assignment).
-                const everRole = (person.assignments || []).some(a => a.role === role);
-                if (everRole && person.activeCount === 0) n += 1;
-                return;
-            }
-            const ff = person.freeFrom ? person.freeFrom.getTime() : null;
-            if (ff && ff <= cut && person.activeCount > 0) {
-                // Freeing inside horizon — count only if their remaining load ends by cut.
-                const allDated = activeInRole.every(a => a.end);
-                if (allDated) n += 1;
-            }
-        });
-        return n;
+        return peopleInRolePool(role).filter(name => personFreeForHorizon(name, role, horizonDays)).length;
     }
 
     [30, 60, 90].forEach(days => {
@@ -3414,24 +4245,32 @@ function buildIntelligenceSummary(projects, alerts, resourceMap, attentionRanked
     };
 }
 
-/** Recompute all intelligence artifacts (call from AppState.setProjects). */
-function computeResourceIntelligence(projects, alerts) {
+/** Recompute intelligence artifacts from a given resourceMap (shared by master + delivery engines). */
+function computeResourceIntelligenceWithMap(projects, alerts, resourceMap) {
     if (!intelligenceEnabled()) {
         return {
             attentionRanked: [],
             capacityForecast: { roles: {}, summary: {}, horizons: [30, 60, 90] },
             intakeRecommendation: { small: 0, medium: 0, large: 0, byHorizon: {} },
             intelligenceSummary: null,
+            resourceMap: resourceMap || {},
         };
     }
-    const resourceMap = buildResourceMap(projects);
-    const attentionRanked = computeAttentionRanked(projects, alerts, resourceMap);
-    const capacityForecast = computeRoleCapacityForecast(projects, resourceMap);
-    const intakeRecommendation = computeBusinessIntakeCapacity(resourceMap, capacityForecast);
+    const map = resourceMap || {};
+    const roster = (typeof AppState !== 'undefined' && AppState.databaseRoster) || [];
+    const attentionRanked = computeAttentionRanked(projects, alerts, map);
+    const capacityForecast = computeRoleCapacityForecast(projects, map, undefined, roster);
+    const intakeRecommendation = computeBusinessIntakeCapacity(map, capacityForecast, roster);
     const intelligenceSummary = buildIntelligenceSummary(
-        projects, alerts, resourceMap, attentionRanked, capacityForecast, intakeRecommendation
+        projects, alerts, map, attentionRanked, capacityForecast, intakeRecommendation
     );
-    return { attentionRanked, capacityForecast, intakeRecommendation, intelligenceSummary, resourceMap };
+    return { attentionRanked, capacityForecast, intakeRecommendation, intelligenceSummary, resourceMap: map };
+}
+
+/** Recompute all intelligence artifacts (call from AppState.setProjects). Uses project-master resource map. */
+function computeResourceIntelligence(projects, alerts) {
+    const resourceMap = buildResourceMap(projects);
+    return computeResourceIntelligenceWithMap(projects, alerts, resourceMap);
 }
 
 function exportToCSV(projects) {
@@ -3439,7 +4278,7 @@ function exportToCSV(projects) {
         'project_id','project_name','owner','page_name','page_owner',
         'stage','status','BA','progress','start_date','release_date',
         'priority','CMS','tags','notes','developer','qa_engineer',
-        'total_pages','completed_pages','page_priority','actual_live_date'
+        'total_pages','completed_pages','page_priority','actual_live_date','website_url','preview_image'
     ];
     
     const rows = projects.map(p => [
@@ -3447,7 +4286,7 @@ function exportToCSV(projects) {
         p.stage, p.status, p.ba, p.progress, p.start_date, p.release_date,
         p.priority, p.cms, (p.tags||[]).join('; '), p.notes,
         p.developer, p.qa_engineer, p.total_pages, p.completed_pages,
-        p.page_priority, p.actual_live_date
+        p.page_priority, p.actual_live_date, p.website_url || '', p.preview_image || ''
     ]);
 
     const csvContent = [headers, ...rows]

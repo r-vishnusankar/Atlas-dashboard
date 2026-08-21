@@ -112,7 +112,10 @@ function calcProjectDuration(p) {
 
 /** Pipeline health score 0-100 from alert-free share of active projects */
 function calcHealthScore() {
-    const all     = AppState.allProjects.filter(p => p.stage !== 'Live');
+    const all     = AppState.allProjects.filter(p => {
+        if (typeof getProjectLifecycle === 'function' && getProjectLifecycle(p).phase === 'post_live') return false;
+        return p.stage !== 'Live';
+    });
     const total   = all.length || 1;
     const flagged = getUniqueAlertProjects(AppState.alerts).length;
     const score   = Math.max(0, Math.min(100, Math.round(((total - flagged) / total) * 100)));
@@ -451,6 +454,10 @@ function renderAtRiskNow() {
             ? `<span style="font-size:10px;color:var(--text-muted);">${team.length} people</span>`
             : '';
 
+        const stageLabel = typeof getProjectLifecycle === 'function'
+            ? getProjectLifecycle(p).displayLabel
+            : p.stage;
+
         return `
         <div class="ov-risk-item" style="border-left:3px solid ${meta.color};background:${meta.bg};"
              onclick="App.handleCardClick('${p.id}')">
@@ -467,7 +474,7 @@ function renderAtRiskNow() {
                 <div class="ov-risk-name">${escapeHtml(p.name)}</div>
                 <div class="ov-risk-meta">
                     <span class="ov-risk-badge" style="background:${meta.color}22;color:${meta.color};">${meta.label}</span>
-                    <span style="font-size:11px;color:var(--text-muted);">${escapeHtml(p.stage)}</span>
+                    <span style="font-size:11px;color:var(--text-muted);">${escapeHtml(stageLabel)}</span>
                     ${teamHint}
                 </div>
             </div>
@@ -719,28 +726,38 @@ function renderPipelineHealthCard() {
     </div>`;
 }
 
-function renderRecentLive() {
-    const { recentlyLive } = computeOverviewDateMetrics(AppState.allProjects);
-    const live = recentlyLive.slice(0, 3);
-
-    if (!live.length) return '';
-
-    const rows = live.map(p => {
-        const init = getInitials(p.owner);
-        const avc  = stringToColor(p.owner);
-        const { badge, badgeColor } = getLaunchTimingBadge(p);
-        const dur = calcProjectDuration(p);
-        const durText = dur ? `· ${dur.text} to build` : '';
-        return `
+function renderOverviewLiveRow(p, today) {
+    const init = getInitials(p.owner);
+    const avc  = stringToColor(p.owner);
+    const lc   = typeof getProjectLifecycle === 'function' ? getProjectLifecycle(p) : null;
+    const dur  = calcProjectDuration(p);
+    const durText = dur ? ` · ${dur.text} to build` : '';
+    const { badge, badgeColor } = getLaunchTimingBadge(p, today);
+    const dateMeta = isValidParsedDate(p.actual_live_date)
+        ? formatDateShort(p.actual_live_date)
+        : (lc?.phase === 'post_live' ? lc.displayLabel : '—');
+    const rightBadge = lc?.phase === 'post_live'
+        ? `<div class="live-row__badge" style="color:#1E8E3E;background:rgba(30,142,62,0.12);">${escapeHtml(lc.displayLabel)}</div>`
+        : (badge ? `<div class="live-row__badge" style="color:${badgeColor};background:${badgeColor}22;">${badge}</div>` : '');
+    return `
         <div class="live-row" onclick="App.handleCardClick('${p.id}')">
             <div class="live-row__avatar" style="background:${avc}">${init}</div>
             <div class="live-row__info">
                 <div class="live-row__name">${escapeHtml(p.name)}</div>
-                <div class="live-row__meta">${escapeHtml(p.client || '—')} · ${formatDateShort(p.actual_live_date)}${durText}</div>
+                <div class="live-row__meta">${escapeHtml(p.client || '—')} · ${escapeHtml(dateMeta)}${durText}</div>
             </div>
-            ${badge ? `<div class="live-row__badge" style="color:${badgeColor};background:${badgeColor}22;">${badge}</div>` : ''}
+            ${rightBadge}
         </div>`;
-    }).join('');
+}
+
+function renderRecentLive() {
+    const { recentlyLive } = computeOverviewDateMetrics(AppState.allProjects);
+    const today = startOfDay(new Date());
+    const live = recentlyLive.slice(0, 3);
+
+    if (!live.length) return '';
+
+    const rows = live.map(p => renderOverviewLiveRow(p, today)).join('');
 
     return `
     <div>
@@ -976,21 +993,7 @@ function renderOverview(projects) {
     const today = dateMetrics.today;
     const recentLive = dateMetrics.recentlyLive.slice(0, 3);
 
-    const recentLiveRows = recentLive.map(p => {
-        const init = getInitials(p.owner);
-        const avc  = stringToColor(p.owner);
-        const dur  = calcProjectDuration(p);
-        const { badge, badgeColor: bColor } = getLaunchTimingBadge(p, today);
-        return `
-        <div class="live-row" onclick="App.handleCardClick('${p.id}')">
-            <div class="live-row__avatar" style="background:${avc}">${init}</div>
-            <div class="live-row__info">
-                <div class="live-row__name">${escapeHtml(p.name)}</div>
-                <div class="live-row__meta">${escapeHtml(p.client||'—')} · ${formatDateShort(p.actual_live_date)}${dur?' · '+dur.text+' to build':''}</div>
-            </div>
-            ${badge?`<div class="live-row__badge" style="color:${bColor};background:${bColor}22;">${badge}</div>`:''}
-        </div>`;
-    }).join('');
+    const recentLiveRows = recentLive.map(p => renderOverviewLiveRow(p, today)).join('');
 
     return `
     <!-- ── Hero Metrics ── -->
@@ -1089,6 +1092,45 @@ function initCalendar() {
 /* ══════════════════════════════════════════
    VIEW: DIRECTORY (Projects)
 ══════════════════════════════════════════ */
+function projectWebsiteUrl(p) {
+    if (typeof featureOn === 'function' && !featureOn('PROJECT_WEBSITE_PREVIEW')) return '';
+    return typeof normalizeWebsiteUrl === 'function'
+        ? normalizeWebsiteUrl(p?.website_url)
+        : String(p?.website_url || '').trim();
+}
+
+function renderVisitWebsiteBtn(p) {
+    const url = projectWebsiteUrl(p);
+    if (!url) return '';
+    const host = typeof websiteHostname === 'function' ? websiteHostname(url) : '';
+    return `<a class="streak-pd-action-btn streak-pd-action-btn--site" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" title="Open ${escapeHtml(host || url)}">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+        Visit website
+    </a>`;
+}
+
+function renderDirectorySiteThumb(p) {
+    if (typeof featureOn === 'function' && !featureOn('PROJECT_WEBSITE_PREVIEW')) return '';
+    const url = projectWebsiteUrl(p);
+    const src = typeof projectThumbSrc === 'function' ? projectThumbSrc(p) : '';
+    if (!src && !url) return '';
+    const host = url && typeof websiteHostname === 'function' ? websiteHostname(url) : '';
+    const shotFallback = (p.preview_image && url && typeof websitePreviewSrc === 'function')
+        ? websitePreviewSrc(url)
+        : '';
+    const onErr = shotFallback
+        ? `if(this.dataset.fallback){const n=this.dataset.fallback; delete this.dataset.fallback; this.src=n;}else{this.style.display='none'; this.parentElement.classList.add('is-fallback');}`
+        : `this.style.display='none'; this.parentElement.classList.add('is-fallback');`;
+    return `
+        <div class="directory-card__thumb">
+            ${src ? `<img src="${escapeHtml(src)}" alt="" loading="lazy" decoding="async"${shotFallback ? ` data-fallback="${escapeHtml(shotFallback)}"` : ''}
+                onerror="${onErr}">` : ''}
+            <div class="directory-card__thumb-fallback">${escapeHtml(host || p.name || 'Website')}</div>
+            ${url ? `<a class="directory-card__visit" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer"
+               onclick="event.stopPropagation();" title="Open ${escapeHtml(host || url)}">Visit ↗</a>` : ''}
+        </div>`;
+}
+
 function renderProjects(projects) {
     let html = `
     <div class="directory-header">
@@ -1133,8 +1175,10 @@ function renderProjects(projects) {
         }
 
         const dispProg = projectDisplayProgress(p);
+        const siteThumb = renderDirectorySiteThumb(p);
         html += `
-        <div class="directory-card card-light" onclick="App.handleCardClick('${p.id}')">
+        <div class="directory-card card-light${siteThumb ? ' directory-card--has-site' : ''}" onclick="App.handleCardClick('${p.id}')">
+            ${siteThumb}
             <div class="directory-card__badges">
                  <div class="directory-pill directory-pill--stage">${projectFunnelStage(p)}</div>
                  <div class="${statusPill}">${stLabel}</div>
@@ -1192,6 +1236,7 @@ function renderPipeline(projects) {
         let cards = pjs.map(p => {
             const statusColor = getStatusPastel(p.status).replace('bg-', '');
             const dispProg = projectDisplayProgress(p);
+            const siteUrl = projectWebsiteUrl(p);
             
             return `
             <div class="kanban-card" onclick="App.handleCardClick('${p.id}')">
@@ -1200,6 +1245,7 @@ function renderPipeline(projects) {
                     <div style="width:8px; height:8px; border-radius:50%; background:var(--bg-${statusColor})"></div>
                 </div>
                 <div style="font-size:14px; font-weight:var(--fw-heavy); margin-bottom:12px;">${p.name}</div>
+                ${siteUrl ? `<a class="kanban-site-link" href="${escapeHtml(siteUrl)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation();">Visit site ↗</a>` : ''}
                 ${p.total_pages > 0 ? `<div style="font-size:10px; font-weight:bold; color:var(--text-muted); margin-bottom:12px;">Pages: ${p.completed_pages}/${p.total_pages} (${p.page_priority})</div>` : ''}
                 <div style="display:flex; justify-content:space-between; align-items:center">
                     <span style="font-size:12px; font-weight:var(--fw-bold); display:flex; align-items:center; gap:4px">
@@ -1404,9 +1450,14 @@ function renderAvailabilityCalendar(resMap) {
     }
 
     Object.values(resMap).forEach(p => {
+        const avail = getResourceAvailability(p, today);
+        if (avail.status === 'free') {
+            freeNow.push(p);
+            return;
+        }
         if (!p.freeFrom) return;
         const d = new Date(p.freeFrom); d.setHours(0,0,0,0);
-        if (d <= today) { freeNow.push(p); return; }
+        if (d <= today) return;
         const key = localKey(d);
         if (!freeMap[key]) freeMap[key] = [];
         freeMap[key].push(p);
@@ -1550,8 +1601,9 @@ function renderAvailPopoverContent() {
             <div class="res-pop-info">
                 <div class="res-pop-name">${escapeHtml(p.name)}${hasConflict ? ` <span class="res-pop-cfl ui-inline-icon" aria-label="Conflict">${Icons.alert}</span>` : ''}</div>
                 <div class="res-pop-bar-wrap"><div class="res-pop-bar" style="width:${barW}%"></div></div>
+                ${avail.subtitle ? `<div class="res-pop-sub">${escapeHtml(avail.subtitle)}</div>` : ''}
             </div>
-            <span class="res-pop-chip ${avail.popClass}">${avail.label}</span>
+            <span class="res-pop-chip ${avail.popClass}">${escapeHtml(avail.label)}</span>
         </div>`;
     }).join('');
 }
@@ -1572,7 +1624,7 @@ function renderPeopleTable(people, today, WINDOW, statusColor, statusLabel, fmtD
         const avc  = stringToColor(p.name);
         const hasConflict = p.conflicts.length > 0;
         const avail = getResourceAvailability(p, today);
-        const chipText = avail.status === 'now' ? 'Free now' : avail.label || '—';
+        const chipText = avail.label || '—';
         const chipCls  = avail.chipClass || '';
 
         // Load severity
@@ -1628,6 +1680,7 @@ function renderPeopleTable(people, today, WINDOW, statusColor, statusLabel, fmtD
             <!-- Availability -->
             <td class="res-tbl-cell res-tbl-cell--avail">
                 <span class="res-free-chip ${chipCls}" style="font-size:10px;padding:2px 8px;">${escapeHtml(chipText)}</span>
+                ${avail.subtitle ? `<div class="res-tbl-avail-sub">${escapeHtml(avail.subtitle)}</div>` : ''}
             </td>
             <!-- Active projects (pills) -->
             <td class="res-tbl-cell res-tbl-cell--projects">
@@ -1678,10 +1731,185 @@ function renderResources() {
     </div>`;
 }
 
+/* ══════════════════════════════════════════
+   DELIVERY ALLOCATION — Database names + Delivery tabs (shared by Resources delivery + Team allocation)
+══════════════════════════════════════════ */
+function renderSiblingAllocationView(opts = {}) {
+    const title = opts.title || 'Team allocation';
+    const subtitle = opts.subtitle
+        || 'Names from <strong>Database</strong> sheet. Work from Delivery tabs only — Stage <strong>Live</strong> = done.';
+    const data = AppState.siblingAllocation;
+    const stats = data.stats || {};
+    const view = AppState.allocationView || 'people';
+    const filter = AppState.allocationFilter || 'all';
+    const searchQ = String(AppState.allocationSearch || '').trim().toLowerCase();
+
+    const matchesSearch = (name) => !searchQ || String(name || '').toLowerCase().includes(searchQ);
+
+    const statBar = `
+    <div class="alloc-stats">
+        <div class="alloc-stat alloc-stat--work">
+            <span class="alloc-stat-num">${stats.onWork || 0}</span>
+            <span class="alloc-stat-lbl">On work</span>
+        </div>
+        <div class="alloc-stat alloc-stat--free">
+            <span class="alloc-stat-num">${stats.free || 0}</span>
+            <span class="alloc-stat-lbl">Free</span>
+        </div>
+        <div class="alloc-stat">
+            <span class="alloc-stat-num">${stats.activeRows || 0}</span>
+            <span class="alloc-stat-lbl">Open pages</span>
+        </div>
+        <div class="alloc-stat">
+            <span class="alloc-stat-num">${stats.projectsWithSibling || 0}</span>
+            <span class="alloc-stat-lbl">Delivery tabs</span>
+        </div>
+    </div>`;
+
+    const viewTabs = ['people', 'projects'].map(v => {
+        const lbl = v === 'people' ? 'By person' : 'By project';
+        return `<button type="button" class="alloc-tab ${view === v ? 'alloc-tab--active' : ''}"
+            onclick="App.setAllocationView('${v}')">${lbl}</button>`;
+    }).join('');
+
+    const filterPills = [
+        ['all', 'All'],
+        ['on_work', 'On work'],
+        ['free', 'Free'],
+    ].map(([id, lbl]) => `
+        <button type="button" class="alloc-filter ${filter === id ? 'alloc-filter--active' : ''}"
+            onclick="App.setAllocationFilter('${id}')">${lbl}</button>`).join('');
+
+    function statusChip(active) {
+        return active
+            ? '<span class="alloc-chip alloc-chip--work">On work</span>'
+            : '<span class="alloc-chip alloc-chip--free">Free</span>';
+    }
+
+    function projectPills(rows) {
+        const names = [...new Set((rows || []).map(r => r.projectName).filter(Boolean))];
+        if (!names.length) return '<span class="alloc-muted">—</span>';
+        return names.map(n => `<span class="alloc-proj-pill">${escapeHtml(n)}</span>`).join('');
+    }
+
+    let body = '';
+    const effectiveView = view === 'rows' ? 'people' : view;
+
+    if (effectiveView === 'people') {
+        let people = (data.people || []).filter(p => matchesSearch(p.name));
+        if (filter === 'on_work') people = people.filter(p => p.status === 'on_work');
+        if (filter === 'free') people = people.filter(p => p.status === 'free');
+
+        if (!people.length) {
+            body = `<div class="alloc-empty">No people match this filter.${stats.totalPeople ? '' : ' Load projects with Delivery tabs first.'}</div>`;
+        } else {
+            body = `<div class="alloc-table-wrap"><table class="alloc-table" aria-label="Team allocation by person">
+                <thead><tr>
+                    <th>Person</th><th>Status</th><th>Projects</th>
+                </tr></thead><tbody>
+                ${people.map(p => {
+                    const init = getInitials(p.name);
+                    const avc = stringToColor(p.name);
+                    const activeRows = p.activeRows || [];
+                    return `<tr>
+                        <td><div class="alloc-person"><span class="alloc-avatar" style="background:${avc}">${init}</span>${escapeHtml(p.name)}</div></td>
+                        <td>${statusChip(p.status === 'on_work')}</td>
+                        <td class="alloc-proj-cell">${projectPills(activeRows)}</td>
+                    </tr>`;
+                }).join('')}
+                </tbody></table></div>`;
+        }
+    } else if (effectiveView === 'projects') {
+        let projects = (data.projectsActive || []).filter(p =>
+            !searchQ || p.name.toLowerCase().includes(searchQ) || p.people.some(n => n.toLowerCase().includes(searchQ))
+        );
+        if (filter === 'free') projects = [];
+
+        if (!projects.length) {
+            body = `<div class="alloc-empty">${filter === 'free' ? 'Projects view shows only active work — switch to By person for Free list.' : 'No projects with open Delivery rows.'}</div>`;
+        } else {
+            body = `<div class="alloc-table-wrap"><table class="alloc-table" aria-label="Team allocation by project">
+                <thead><tr>
+                    <th>Project</th><th>People on work</th><th>Open pages</th>
+                </tr></thead><tbody>
+                ${projects.map(p => {
+                    const peopleStr = p.people.map(n => escapeHtml(n)).join(', ');
+                    return `<tr>
+                        <td><button type="button" class="alloc-link" onclick="App.handleCardClick('${escapeHtml(p.id)}')">${escapeHtml(p.name)}</button></td>
+                        <td>${peopleStr || '—'}</td>
+                        <td>${p.rowCount}</td>
+                    </tr>`;
+                }).join('')}
+                </tbody></table></div>`;
+        }
+    }
+
+    return `
+    <div class="alloc-page">
+        <header class="alloc-head">
+            <div>
+                <h1 class="alloc-title">${escapeHtml(title)}</h1>
+                <p class="alloc-sub">${subtitle}</p>
+            </div>
+        </header>
+        ${statBar}
+        <div class="alloc-toolbar">
+            <div class="alloc-tabs" role="tablist">${viewTabs}</div>
+            <div class="alloc-filters">${filterPills}</div>
+            <input type="search" class="alloc-search" placeholder="Search name, project, page…"
+                value="${escapeHtml(AppState.allocationSearch || '')}"
+                oninput="App.setAllocationSearch(this.value)" />
+        </div>
+        ${body}
+    </div>`;
+}
+
+function renderTeamAllocation() {
+    return renderSiblingAllocationView({
+        title: 'Team allocation',
+    });
+}
+
 function getManagerRoster() {
     return typeof enrichResourceRoster === 'function'
         ? enrichResourceRoster(AppState.resourceRoster || [], AppState.resourceMap)
         : (AppState.resourceRoster || []);
+}
+
+function asRmList(val) {
+    return Array.isArray(val) ? val : [];
+}
+
+function findRmSheetPerson(emp, roster) {
+    const name = emp?.full_name || emp?.name || '';
+    const list = roster || [];
+    const key = typeof normalizePersonKey === 'function' ? normalizePersonKey(name) : String(name).toLowerCase();
+    const byKey = list.find(r => r.nameKey === key || (typeof normalizePersonKey === 'function' && normalizePersonKey(r.name) === key));
+    if (byKey) return byKey;
+    if (typeof personNamesSoftMatch === 'function') {
+        return list.find(r => personNamesSoftMatch(name, r.name)) || null;
+    }
+    return null;
+}
+
+/** True bench: not on delivery work, and not assigned via Resource API FTE. */
+function isRmAvailableNow(emp, roster) {
+    if (!emp || !isRmProjectStaffable(emp) || isRmLeadershipRole(emp)) return false;
+    if ((Number(emp.utilization_pct) || 0) > 0) return false;
+    const st = String(emp.availability_status || emp.availability || '');
+    if (st && /full|partial/i.test(st) && !/bench|available/i.test(st)) return false;
+    const sheet = findRmSheetPerson(emp, roster);
+    if (sheet && sheet.availability && sheet.availability !== 'Bench') return false;
+    return true;
+}
+
+function listRmAvailablePeople(roster, apiEmps, apiOnline) {
+    const list = (apiOnline && (apiEmps || []).length)
+        ? apiEmps.filter(e => isRmAvailableNow(e, roster))
+        : (roster || []).filter(e =>
+            e.availability === 'Bench' && isRmProjectStaffable(e) && !isRmLeadershipRole(e));
+    return list.slice().sort((a, b) =>
+        String(a.full_name || a.name || '').localeCompare(String(b.full_name || b.name || '')));
 }
 
 function renderResourcesManagerView() {
@@ -1689,25 +1917,25 @@ function renderResourcesManagerView() {
     const meta = AppState.resourceRosterMeta || {};
     const tab = AppState.resourcesManagerTab || 'dashboard';
     const roster = getManagerRoster();
+    const apiEmps = asRmList(AppState.resourceApiEmployees);
     const apiOnline = AppState.resourceApiStatus === 'online';
-    const apiEmps = AppState.resourceApiEmployees || [];
-    const summary = apiOnline && (AppState.resourceApiMeta?.dashboard)
-        ? {
-            total: AppState.resourceApiMeta.dashboard.total_employees,
-            allocated: AppState.resourceApiMeta.dashboard.allocated,
-            bench: AppState.resourceApiMeta.dashboard.bench,
-            partial: AppState.resourceApiMeta.dashboard.partially_allocated,
-            conflicts: roster.filter(e => e.conflicts?.length).length,
-            freeing30: AppState.resourceApiMeta.dashboard.freeing_30d,
-            avgUtil: AppState.resourceApiMeta.dashboard.avg_utilization_pct,
-            byDepartment: (typeof computeResourceRosterSummary === 'function'
-                ? computeResourceRosterSummary(roster) : {}).byDepartment || {},
-            overAllocated: AppState.resourceApiMeta.dashboard.over_allocated,
-            fromApi: true,
-        }
-        : (typeof computeResourceRosterSummary === 'function'
-            ? computeResourceRosterSummary(roster)
-            : { total: roster.length, allocated: 0, bench: 0, partial: 0, conflicts: 0, freeing30: 0, avgUtil: 0, byDepartment: {} });
+    const dash = apiOnline && AppState.resourceApiMeta?.dashboard;
+    const dashOk = !!(dash && typeof dash === 'object' && Number.isFinite(Number(dash.total_employees)));
+    const apiHasFte = !!(dashOk && ((Number(dash.allocated) || 0) > 0 || (Number(dash.active_allocations) || 0) > 0));
+    const sheetSum = typeof computeResourceRosterSummary === 'function'
+        ? computeResourceRosterSummary(roster)
+        : { total: roster.length, allocated: 0, bench: 0, partial: 0, conflicts: 0, freeing30: 0, avgUtil: 0, byDepartment: {} };
+    const availablePeople = listRmAvailablePeople(roster, apiEmps, apiOnline);
+    const summary = {
+        ...sheetSum,
+        bench: availablePeople.length,
+        conflicts: sheetSum.conflicts,
+        overAllocated: apiHasFte
+            ? Math.max(sheetSum.conflicts || 0, Number(dash.over_allocated) || 0)
+            : sheetSum.conflicts,
+        freeing30: apiHasFte ? (Number(dash.freeing_30d) || sheetSum.freeing30) : sheetSum.freeing30,
+        fromApi: false,
+    };
 
     if (status === 'loading' && !roster.length && !apiEmps.length) {
         return `
@@ -1797,6 +2025,7 @@ function renderResourcesManagerView() {
     ` : '';
 
     const drawer = renderRmEmployeeDrawer(apiEmps, apiOnline);
+    const assignDrawer = renderRmAssignPeopleDrawerIfOpen();
 
     return `
     <div class="rm-manager">
@@ -1817,13 +2046,14 @@ function renderResourcesManagerView() {
         <div class="rm-tabs">${tabBar}</div>
         <div class="rm-panel">${panel}</div>
         ${drawer}
-    </div>`;
+    </div>
+    ${assignDrawer}`;
 }
 
 /** Merge Resource API catalog + main Project tab (sibling sheet) for Manager Projects UI. */
 function getRmMergedProjects() {
     const byExt = new Map();
-    (AppState.resourceApiProjects || []).forEach(p => {
+    asRmList(AppState.resourceApiProjects).forEach(p => {
         const ext = String(p.external_id || '').trim();
         if (!ext) return;
         byExt.set(ext, {
@@ -1880,7 +2110,7 @@ function findRmMergedProject(selectedId, externalId) {
 /** Merge Atlas delivery projects + Resource API catalog for allocate dropdowns. */
 function getRmAllocatableProjects() {
     const byId = new Map();
-    (AppState.resourceApiProjects || []).forEach(p => {
+    asRmList(AppState.resourceApiProjects).forEach(p => {
         const id = p.external_id || p.id;
         if (!id) return;
         byId.set(String(id), {
@@ -1994,13 +2224,39 @@ function renderRmUserCell(emp) {
 }
 
 function formatRmAvailStatus(emp, alreadyOnProject) {
-    if (alreadyOnProject) return { label: 'On Project', cls: 'rm-assign-status--busy' };
-    if (!isRmProjectStaffable(emp)) return { label: 'Leadership', cls: 'rm-assign-status--busy' };
-    const avail = String(emp?.availability_status || '').toLowerCase();
-    if (/leadership/.test(avail)) return { label: 'Leadership', cls: 'rm-assign-status--busy' };
-    if (/bench|available/.test(avail)) return { label: 'Available', cls: 'rm-assign-status--ok' };
-    if (/full|allocated/.test(avail)) return { label: 'On Project', cls: 'rm-assign-status--busy' };
-    return { label: 'Available', cls: 'rm-assign-status--ok' };
+    const signal = formatRmAvailSignal(emp, alreadyOnProject);
+    return { label: signal.label, cls: signal.tone === 'ok' ? 'rm-assign-status--ok' : 'rm-assign-status--busy' };
+}
+
+function formatRmAvailSignal(emp, alreadyOnThisProject) {
+    if (alreadyOnThisProject) {
+        return { label: 'Already assigned', tone: 'busy' };
+    }
+    const allocs = asRmList(AppState.resourceApiAllocations).filter(a =>
+        String(a.employee_id) === String(emp?.id) && String(a.status || 'Active').toLowerCase() !== 'released');
+    const catalog = Object.fromEntries(asRmList(AppState.resourceApiProjects).map(p => [String(p.external_id || p.id), p]));
+    const sheet = Object.fromEntries((AppState.allProjects || []).map(p => [String(p.id), p]));
+    if (allocs.length) {
+        const a = allocs[0];
+        const proj = catalog[String(a.project_external_id)] || sheet[String(a.project_external_id)] || {};
+        const pname = proj.name || a.project_external_id || 'a project';
+        const pct = Number(a.allocation_pct) || 0;
+        return { label: `Allocated · ${pname} (${pct}%)`, tone: 'busy' };
+    }
+    if ((Number(emp?.utilization_pct) || 0) > 0) {
+        return { label: `Allocated · ${emp.utilization_pct}%`, tone: 'busy' };
+    }
+    return { label: 'Available', tone: 'ok' };
+}
+
+function getRmAssignOverLimitNames(employeeIds, extraPct) {
+    const pct = Number(extraPct) || 0;
+    const lookup = Object.fromEntries(asRmList(AppState.resourceApiEmployees).map(e => [String(e.id), e]));
+    return (employeeIds || []).map(String).filter(id => {
+        const emp = lookup[id];
+        const used = Number(emp?.utilization_pct) || 0;
+        return used + pct > 100;
+    }).map(id => lookup[id]?.full_name || id);
 }
 
 function getRmProjectFte(externalId, allocs) {
@@ -2011,11 +2267,13 @@ function getRmProjectFte(externalId, allocs) {
 
 function getRmProjectsKpis(projects, allocs) {
     const dash = AppState.resourceApiMeta?.dashboard || {};
-    const emps = AppState.resourceApiEmployees || [];
+    const emps = asRmList(AppState.resourceApiEmployees);
+    const allocList = asRmList(allocs);
+    const projectList = asRmList(projects);
     return {
         totalPeople: dash.total_employees ?? emps.length,
-        activeProjects: projects.length,
-        totalFte: Math.round(allocs.reduce((s, a) => s + (Number(a.allocation_pct) || 0), 0) / 10) / 10,
+        activeProjects: projectList.length,
+        totalFte: Math.round(allocList.reduce((s, a) => s + (Number(a.allocation_pct) || 0), 0) / 10) / 10,
         utilization: dash.avg_utilization_pct ?? 0,
         openRoles: dash.bench ?? emps.filter(e => isRmProjectStaffable(e) && /bench|available/i.test(e.availability_status || '')).length,
     };
@@ -2357,6 +2615,183 @@ function renderRmUserPickTable(employees, options) {
     </div>`;
 }
 
+function renderRmAssignPeopleDrawerIfOpen() {
+    if (!AppState.resourceAllocDrawerOpen) return '';
+    const p = findRmMergedProject(AppState.resourceSelectedProjectId, AppState.resourceSelectedProjectExternalId);
+    if (!p) return '';
+    const extId = p.external_id || p.id;
+    const allocs = asRmList(AppState.resourceApiAllocations).filter(a => a.project_external_id === extId);
+    return renderRmAssignPeopleDrawer(p, extId, allocs);
+}
+
+function renderRmAssignRosterList(employees, options) {
+    const {
+        selected = new Set(),
+        alreadyOn = new Set(),
+        emptyMessage = 'No people to add.',
+    } = options || {};
+
+    if (!employees.length) {
+        return `<div class="rm-assign-roster-empty" role="status">${escapeHtml(emptyMessage)}</div>`;
+    }
+
+    return `<ul class="rm-assign-roster" role="list">${employees.map(e => {
+        const empId = String(e.id);
+        const already = alreadyOn.has(empId) || alreadyOn.has(e.id);
+        const on = selected.has(empId);
+        const signal = formatRmAvailSignal(e, already);
+        const statusCls = signal.tone === 'ok' ? 'rm-assign-status--ok' : 'rm-assign-status--busy';
+        const name = e.full_name || '—';
+        const role = e.designation || e.role_family || '—';
+        return `
+        <li class="rm-assign-person ${on ? 'rm-assign-person--on' : ''} ${already ? 'rm-assign-person--disabled' : ''}"
+            data-id="${escapeHtml(empId)}">
+            <label class="rm-assign-person-row">
+                <input type="checkbox" name="employee_ids" value="${escapeHtml(empId)}"
+                    ${on ? 'checked' : ''} ${already ? 'disabled' : ''}
+                    aria-label="Select ${escapeHtml(name)}"
+                    onchange="App.toggleAllocEmployee('${escapeHtml(empId)}', this.checked)" />
+                <span class="rm-avatar rm-avatar--user" style="background:${stringToColor(name)}" aria-hidden="true">${getInitials(name)}</span>
+                <span class="rm-assign-person-text">
+                    <span class="rm-assign-person-name">${escapeHtml(name)}</span>
+                    <span class="rm-assign-person-role">${escapeHtml(role)}</span>
+                    <span class="rm-assign-status ${statusCls}">${escapeHtml(signal.label)}</span>
+                </span>
+            </label>
+        </li>`;
+    }).join('')}</ul>`;
+}
+
+function renderRmAssignPeopleDrawer(project, extId, allocs) {
+    const draft = AppState.resourceAllocDraft || {
+        selectedEmployeeIds: [],
+        allocationPct: 100,
+        projectRole: '',
+        startDate: new Date().toISOString().slice(0, 10),
+        endDate: '',
+        strict: false,
+    };
+    const selected = new Set((draft.selectedEmployeeIds || []).map(String));
+    const peopleQ = String(AppState.resourceAllocPeopleFilter || '').trim().toLowerCase();
+    const roleQ = String(AppState.resourceAllocRoleFilter || '').trim().toLowerCase();
+    const showAll = !!AppState.resourceAllocShowAll;
+    const alreadyOnProject = new Set(
+        asRmList(allocs)
+            .filter(a => String(a.status || '').toLowerCase() !== 'released')
+            .map(a => String(a.employee_id))
+    );
+
+    let employees = [...asRmList(AppState.resourceApiEmployees)].filter(isRmProjectStaffable);
+    if (peopleQ) {
+        employees = employees.filter(e =>
+            String(e.full_name || '').toLowerCase().includes(peopleQ)
+            || String(e.email || '').toLowerCase().includes(peopleQ)
+            || String(e.department || '').toLowerCase().includes(peopleQ)
+            || String(e.designation || '').toLowerCase().includes(peopleQ));
+    }
+    if (roleQ) {
+        employees = employees.filter(e =>
+            String(e.designation || e.role_family || '').toLowerCase().includes(roleQ));
+    }
+    employees.sort((a, b) => (a.full_name || '').localeCompare(b.full_name || ''));
+
+    const addable = employees.filter(e => !alreadyOnProject.has(String(e.id)));
+    const roster = showAll ? employees : addable;
+    const hasQuery = !!(peopleQ || roleQ);
+    let emptyMessage = 'Sync API to load employees.';
+    if (asRmList(AppState.resourceApiEmployees).filter(isRmProjectStaffable).length) {
+        if (!roster.length && !addable.length && !hasQuery) {
+            emptyMessage = 'Everyone who can be assigned is already on this project.';
+        } else if (!roster.length) {
+            emptyMessage = 'No people match.';
+        }
+    }
+
+    const roles = [...new Set(asRmList(AppState.resourceApiEmployees).map(e => e.designation || e.role_family).filter(Boolean))].sort();
+    const roleOpts = `<option value="">All roles</option>${roles.map(r =>
+        `<option value="${escapeHtml(r)}" ${roleQ === String(r).toLowerCase() ? 'selected' : ''}>${escapeHtml(r)}</option>`
+    ).join('')}`;
+
+    const n = selected.size;
+    const pct = Number(draft.allocationPct) || 100;
+    const totalPct = n * pct;
+    const overNames = getRmAssignOverLimitNames([...selected], pct);
+    const blocked = n > 0 && !!draft.strict && overNames.length > 0;
+    const assignDisabled = n === 0 || blocked;
+    const assignTitle = n === 0
+        ? 'Select at least one person'
+        : (blocked ? `Can't assign — ${overNames.join(', ')} would exceed 100% FTE` : 'Assign selected people');
+    const reasonText = blocked ? `Can't assign — ${overNames.join(', ')} would exceed 100% FTE` : '';
+    const projectName = project?.name || 'this project';
+
+    const configBar = n > 0 ? `
+        <div class="rm-assign-config" id="rm-assign-config">
+            <div class="rm-assign-config-fields">
+                <label>FTE % (each)
+                    <input type="number" min="1" max="100" value="${pct}"
+                        oninput="App.setAllocDraftPct(this.value); const h=this.form.querySelector('[name=allocation_pct]'); if(h)h.value=this.value" />
+                </label>
+                <label>Role override
+                    <input type="text" placeholder="Defaults to each person's designation" value="${escapeHtml(draft.projectRole || '')}"
+                        oninput="this.form.querySelector('[name=project_role]').value=this.value;App.ensureAllocDraft().projectRole=this.value" />
+                </label>
+            </div>
+            <label class="rm-check">
+                <input type="checkbox" name="strict" ${draft.strict ? 'checked' : ''}
+                    onchange="App.setAllocDraftStrict(this.checked)" />
+                Reject if anyone would exceed 100% FTE
+            </label>
+        </div>` : '';
+
+    return `
+    <div class="rm-drawer-backdrop rm-assign-drawer-backdrop" onclick="if(event.target===this)App.closeAssignPeopleDrawer()">
+        <aside id="rm-assign-people-panel" class="rm-drawer rm-assign-drawer card-light" role="dialog" aria-modal="true" aria-labelledby="rm-assign-drawer-title">
+            <form class="rm-assign-drawer-form" onsubmit="event.preventDefault();App.submitAllocModal(this)">
+                <input type="hidden" name="project_external_id" value="${escapeHtml(extId)}" />
+                <input type="hidden" name="allocation_pct" value="${pct}" />
+                <input type="hidden" name="project_role" value="${escapeHtml(draft.projectRole || '')}" />
+                <input type="hidden" name="start_date" value="${escapeHtml(draft.startDate || '')}" />
+                <input type="hidden" name="end_date" value="${escapeHtml(draft.endDate || '')}" />
+                <header class="rm-assign-drawer-head">
+                    <h3 id="rm-assign-drawer-title">Assign people to ${escapeHtml(projectName)}</h3>
+                    <button type="button" class="rm-modal-close" aria-label="Close" title="Close" onclick="App.closeAssignPeopleDrawer()">×</button>
+                </header>
+                <div class="rm-assign-drawer-tools">
+                    <input class="rm-search rm-alloc-people-search" type="search" placeholder="Search people…"
+                        value="${escapeHtml(AppState.resourceAllocPeopleFilter || '')}"
+                        oninput="App.setResourceAllocPeopleFilter(this.value)" />
+                    <select class="rm-proj-role-filter" aria-label="Filter by role" onchange="App.setResourceAllocRoleFilter(this.value)">${roleOpts}</select>
+                    <label class="rm-check rm-assign-showall">
+                        <input type="checkbox" ${showAll ? 'checked' : ''} onchange="App.toggleAllocShowAll(this.checked)" />
+                        Show all
+                    </label>
+                </div>
+                <div class="rm-assign-drawer-list">
+                    ${renderRmAssignRosterList(roster, {
+                        selected,
+                        alreadyOn: alreadyOnProject,
+                        emptyMessage,
+                    })}
+                </div>
+                ${configBar}
+                <footer class="rm-assign-drawer-foot">
+                    <div class="rm-assign-foot-copy">
+                        <div id="rm-assign-foot-summary">${n} ${n === 1 ? 'person' : 'people'} selected · Total ${totalPct}% FTE</div>
+                        <div id="rm-assign-foot-reason" class="rm-assign-reason" ${reasonText ? '' : 'hidden'}>${escapeHtml(reasonText)}</div>
+                    </div>
+                    <div class="rm-assign-foot-actions">
+                        <button type="button" class="rm-proj-btn-ghost" onclick="App.closeAssignPeopleDrawer()">Cancel</button>
+                        <button type="submit" class="rm-proj-btn-primary" id="rm-assign-submit"
+                            ${assignDisabled ? 'disabled' : ''}
+                            title="${escapeHtml(assignTitle)}"
+                            aria-disabled="${assignDisabled ? 'true' : 'false'}">Assign</button>
+                    </div>
+                </footer>
+            </form>
+        </aside>
+    </div>`;
+}
+
 function renderRmProjectPane(apiOnline) {
     if (!apiOnline) return '';
     const mode = AppState.resourceProjectPaneMode || 'empty';
@@ -2401,70 +2836,23 @@ function renderRmProjectPane(apiOnline) {
 
     if (mode === 'detail' && (selectedId || AppState.resourceSelectedProjectExternalId)) {
         const p = findRmMergedProject(selectedId, AppState.resourceSelectedProjectExternalId)
-            || (AppState.resourceApiProjects || []).find(x => x.id === selectedId);
+            || asRmList(AppState.resourceApiProjects).find(x => x.id === selectedId);
         if (!p) {
             return `<div class="rm-proj-detail card-light"><div class="rm-pane-empty">Project not found.</div></div>`;
         }
         const extId = p.external_id || p.id;
-        const allocs = (AppState.resourceApiAllocations || []).filter(a => a.project_external_id === extId);
+        const allocs = asRmList(AppState.resourceApiAllocations).filter(a => a.project_external_id === extId);
         const projectFte = getRmProjectFte(extId, allocs);
         const daysLeft = daysUntilRelease(p.release_date);
-
-        const draft = AppState.resourceAllocDraft || {
-            selectedEmployeeIds: [],
-            allocationPct: 100,
-            projectRole: '',
-            startDate: new Date().toISOString().slice(0, 10),
-            endDate: '',
-            strict: false,
-        };
-        const selected = new Set((draft.selectedEmployeeIds || []).map(String));
-        const peopleQ = String(AppState.resourceAllocPeopleFilter || '').trim().toLowerCase();
-        const roleQ = String(AppState.resourceAllocRoleFilter || '').trim().toLowerCase();
-        let employees = [...(AppState.resourceApiEmployees || [])].filter(isRmProjectStaffable);
-        if (peopleQ) {
-            employees = employees.filter(e =>
-                String(e.full_name || '').toLowerCase().includes(peopleQ)
-                || String(e.email || '').toLowerCase().includes(peopleQ)
-                || String(e.department || '').toLowerCase().includes(peopleQ)
-                || String(e.designation || '').toLowerCase().includes(peopleQ));
-        }
-        if (roleQ) {
-            employees = employees.filter(e =>
-                String(e.designation || e.role_family || '').toLowerCase().includes(roleQ));
-        }
-        employees.sort((a, b) => (a.full_name || '').localeCompare(b.full_name || ''));
-        const alreadyOnProject = new Set(allocs.map(a => String(a.employee_id)));
-        const roles = [...new Set((AppState.resourceApiEmployees || []).map(e => e.designation || e.role_family).filter(Boolean))].sort();
-        const roleOpts = `<option value="">All Roles</option>${roles.map(r =>
-            `<option value="${escapeHtml(r)}" ${roleQ === String(r).toLowerCase() ? 'selected' : ''}>${escapeHtml(r)}</option>`
-        ).join('')}`;
-        const assignTable = renderRmAssignPickTable(employees, {
-            selected,
-            alreadyOn: alreadyOnProject,
-            emptyMessage: peopleQ || roleQ ? 'No people match.' : 'Sync API to load employees.',
-            draftPct: draft.allocationPct || 100,
-        });
-        const totalSelectedFte = selected.size * (Number(draft.allocationPct) || 100);
-        const selectedChips = [...selected].map(id => {
-            const e = (AppState.resourceApiEmployees || []).find(x => String(x.id) === id);
-            const name = e?.full_name || id;
-            return `<span class="rm-alloc-chip">
-                <span class="rm-avatar rm-avatar--sm" style="background:${stringToColor(name)}">${getInitials(name)}</span>
-                ${escapeHtml(name)}
-                <button type="button" class="rm-alloc-chip-x" aria-label="Remove ${escapeHtml(name)}"
-                    onclick="event.preventDefault();App.toggleAllocEmployee('${escapeHtml(id)}', false)">×</button>
-            </span>`;
-        }).join('');
-
-        const empMap = Object.fromEntries((AppState.resourceApiEmployees || []).map(e => [e.id, e]));
+        const empMap = Object.fromEntries(asRmList(AppState.resourceApiEmployees).map(e => [String(e.id), e]));
         const activeAllocs = allocs.filter(a => String(a.status || '').toLowerCase() !== 'released');
         const assignedRows = activeAllocs.length ? activeAllocs.map(a => {
-            const emp = empMap[a.employee_id];
+            const emp = empMap[String(a.employee_id)];
             const name = emp?.full_name || a.employee_id;
             const dept = emp?.department || '—';
             const role = a.project_role || emp?.designation || '—';
             const pct = Number(a.allocation_pct) || 0;
+            const start = a.start_date ? escapeHtml(String(a.start_date).slice(0, 10)) : '—';
             return `<tr>
                 <td>
                     <div class="rm-emp-cell">
@@ -2478,9 +2866,13 @@ function renderRmProjectPane(apiOnline) {
                 <td>${escapeHtml(role)}</td>
                 <td><strong>${pct}%</strong></td>
                 <td><span class="rm-pill">${escapeHtml(a.status || 'Active')}</span></td>
-                <td>${a.start_date ? escapeHtml(String(a.start_date).slice(0, 10)) : '—'}
-                    ${a.end_date ? ` → ${escapeHtml(String(a.end_date).slice(0, 10))}` : ''}</td>
-                <td><button type="button" class="rm-link" onclick="App.releaseApiAllocation('${escapeHtml(a.id)}')">Release</button></td>
+                <td>${start}</td>
+                <td class="rm-proj-actions-cell">
+                    <button type="button" class="rm-icon-btn" title="Edit FTE %" aria-label="Edit FTE % for ${escapeHtml(name)}"
+                        onclick='App.editAllocPct(${JSON.stringify(a.id)}, ${pct})'>${Icons.settings}</button>
+                    <button type="button" class="rm-icon-btn rm-icon-btn--danger" title="Remove from project" aria-label="Remove ${escapeHtml(name)} from project"
+                        onclick='App.releaseApiAllocation(${JSON.stringify(a.id)}, ${JSON.stringify(name)})'>${Icons.logout}</button>
+                </td>
             </tr>`;
         }).join('') : '';
 
@@ -2488,106 +2880,82 @@ function renderRmProjectPane(apiOnline) {
         const typeBadge = isOps
             ? `<span class="rm-proj-type-badge rm-proj-type-badge--ops">Operational</span>`
             : `<span class="rm-proj-active-badge">Active project</span>`;
+        const catId = p.catalogId || (p.source && p.source !== 'sheet' ? p.id : null)
+            || (asRmList(AppState.resourceApiProjects).find(x => String(x.external_id) === String(extId)) || {}).id
+            || null;
+        const daysOverdue = daysLeft != null && daysLeft < 0;
+        const daysVal = daysLeft == null ? '—' : Math.abs(daysLeft);
+        const daysLbl = daysLeft == null ? 'Days left' : (daysOverdue ? 'Overdue' : 'Days left');
+        const assignTrigger = `<button type="button" class="rm-proj-btn-primary" id="rm-assign-people-trigger"
+            onclick="App.openAssignPeopleDrawer()">+ Assign people</button>`;
+        const assignCta = `<button type="button" class="rm-proj-btn-primary" onclick="App.openAssignPeopleDrawer()">+ Assign people</button>`;
+
+        const assignedBody = activeAllocs.length ? `
+            <div class="rm-table-wrap rm-proj-assigned-table">
+                <table class="rm-table">
+                    <thead>
+                        <tr>
+                            <th>Employee</th><th>Role</th><th>FTE %</th><th>Status</th><th>Start Date</th><th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>${assignedRows}</tbody>
+                </table>
+            </div>` : `
+            <div class="rm-assigned-empty">
+                <div class="rm-assigned-empty-icon ui-inline-icon" aria-hidden="true">${Icons.users}</div>
+                <p class="rm-assigned-empty-title">No one is assigned to this project yet.</p>
+                <p class="rm-hint">Add people to staff this work.</p>
+                ${assignCta}
+            </div>`;
+
+        const actions = catId ? `
+            <div class="rm-proj-action-group">
+                <button type="button" class="rm-proj-btn-ghost" onclick='App.setProjectActivityType(${JSON.stringify(catId)}, ${JSON.stringify(isOps ? 'project' : 'operational')})'>
+                    Mark as ${isOps ? 'Active project' : 'Operational'}
+                </button>
+                <button type="button" class="rm-proj-btn-ghost" onclick="App.openProjectPaneEdit('${escapeHtml(catId)}')">Edit</button>
+            </div>
+            <details class="rm-proj-row-menu rm-proj-row-menu--danger-slot">
+                <summary class="rm-proj-menu-btn" title="More actions" aria-label="More actions">⋯</summary>
+                <div class="rm-proj-row-menu-panel">
+                    <button type="button" class="rm-proj-row-menu-item rm-proj-row-menu-item--danger"
+                        onclick='App.deleteResourceProject(${JSON.stringify(catId)}, ${JSON.stringify(p.name || '')})'>Delete project</button>
+                </div>
+            </details>` : `
+            <div class="rm-proj-action-group">
+                <button type="button" class="rm-proj-btn-ghost" onclick="App.syncResourceApi({ silent: false })">Sync to enable</button>
+            </div>`;
 
         return `
-        <div class="rm-proj-detail card-light">
-            <div class="rm-proj-detail-head">
-                <div class="rm-proj-detail-hero">
-                    ${renderRmProjectIcon(p.name)}
-                    <div>
-                        <div class="rm-proj-detail-name-row">
-                            <h3 class="rm-proj-detail-title">${escapeHtml(p.name)}</h3>
-                            ${typeBadge}
+        <div class="rm-proj-staff">
+            <div class="rm-proj-detail card-light">
+                <div class="rm-proj-detail-head">
+                    <div class="rm-proj-detail-hero">
+                        ${renderRmProjectIcon(p.name)}
+                        <div>
+                            <div class="rm-proj-detail-name-row">
+                                <h1 class="rm-proj-detail-title">${escapeHtml(p.name)}</h1>
+                                ${typeBadge}
+                            </div>
+                            <p class="rm-proj-detail-sub">${isOps ? 'Internal / operational activity' : `Release: ${escapeHtml(p.release_date || '—')}`}</p>
                         </div>
-                        <p class="rm-proj-detail-sub">${isOps ? 'Internal / operational activity' : `Release: ${escapeHtml(p.release_date || '—')}`}</p>
                     </div>
+                    <div class="rm-proj-detail-actions">${actions}</div>
                 </div>
-                <div class="rm-proj-detail-actions">
-                    ${(() => {
-                        const catId = p.catalogId || (p.source && p.source !== 'sheet' ? p.id : null)
-                            || ((AppState.resourceApiProjects || []).find(x => String(x.external_id) === String(extId)) || {}).id
-                            || null;
-                        if (catId) {
-                            return `
-                            <button type="button" class="rm-proj-btn-ghost" onclick='App.setProjectActivityType(${JSON.stringify(catId)}, ${JSON.stringify(isOps ? 'project' : 'operational')})'>
-                                Mark as ${isOps ? 'Active project' : 'Operational'}
-                            </button>
-                            <button type="button" class="rm-proj-btn-ghost" onclick="App.openProjectPaneEdit('${escapeHtml(catId)}')">Edit</button>
-                            <button type="button" class="rm-proj-btn-danger" title="Delete"
-                                onclick='App.deleteResourceProject(${JSON.stringify(catId)}, ${JSON.stringify(p.name || '')})'>Delete</button>`;
-                        }
-                        return `
-                            <button type="button" class="rm-proj-btn-danger" disabled title="Sync this sheet project into the API catalog first">Delete</button>
-                            <button type="button" class="rm-proj-btn-ghost" onclick="App.syncResourceApi({ silent: false })">Sync to enable</button>`;
-                    })()}
+                <div class="rm-proj-detail-stats">
+                    <div><span class="rm-proj-stat-val">${activeAllocs.length}</span><span class="rm-proj-stat-lbl">Assigned</span></div>
+                    <div><span class="rm-proj-stat-val">${projectFte}%</span><span class="rm-proj-stat-lbl">FTE</span></div>
+                    <div class="${daysOverdue ? 'rm-proj-stat--overdue' : ''}"><span class="rm-proj-stat-val">${daysVal}</span><span class="rm-proj-stat-lbl">${daysLbl}</span></div>
+                    <div class="rm-proj-stat-badge">${formatRmProjectStageBadge(p)}</div>
                 </div>
-            </div>
-            <div class="rm-proj-detail-stats">
-                <div><span class="rm-proj-stat-val">${activeAllocs.length}</span><span class="rm-proj-stat-lbl">Assigned</span></div>
-                <div><span class="rm-proj-stat-val">${(Math.round((projectFte / 100) * 10) / 10)} FTE</span><span class="rm-proj-stat-lbl">${activeAllocs.length} ${activeAllocs.length === 1 ? 'person' : 'people'}</span></div>
-                <div><span class="rm-proj-stat-val">${daysLeft != null ? Math.max(0, daysLeft) : '—'}</span><span class="rm-proj-stat-lbl">Days Left</span></div>
-                <div class="rm-proj-stat-badge">${formatRmProjectStageBadge(p)}</div>
-            </div>
 
-            <div class="rm-proj-assigned">
-                <div class="rm-proj-assign-head">
-                    <h4>Assigned team</h4>
-                    <span class="rm-list-meta">${activeAllocs.length} people · ${(Math.round((projectFte / 100) * 10) / 10)} FTE</span>
+                <div class="rm-proj-assigned">
+                    <div class="rm-proj-assign-head">
+                        <h4>Assigned team${activeAllocs.length ? ` <span class="rm-heading-count">(${activeAllocs.length})</span>` : ''}</h4>
+                        ${assignTrigger}
+                    </div>
+                    ${assignedBody}
                 </div>
-                ${assignedRows ? `
-                <div class="rm-table-wrap rm-proj-assigned-table">
-                    <table class="rm-table">
-                        <thead>
-                            <tr>
-                                <th>Employee</th><th>Role</th><th>FTE %</th><th>Status</th><th>Dates</th><th></th>
-                            </tr>
-                        </thead>
-                        <tbody>${assignedRows}</tbody>
-                    </table>
-                </div>` : `<div class="rm-empty rm-empty--inline">No one assigned yet.</div>`}
-            </div>
-
-            <div class="rm-proj-assign">
-                <div class="rm-proj-assign-head">
-                    <h4>Assign people</h4>
-                    <div class="rm-proj-assign-tools">
-                        <input class="rm-search rm-alloc-people-search" type="search" placeholder="Search people…"
-                            value="${escapeHtml(AppState.resourceAllocPeopleFilter || '')}"
-                            oninput="App.setResourceAllocPeopleFilter(this.value)" />
-                        <select class="rm-proj-role-filter" onchange="App.setResourceAllocRoleFilter(this.value)">${roleOpts}</select>
-                    </div>
-                </div>
-                <form class="rm-proj-assign-form" onsubmit="event.preventDefault();App.submitAllocModal(this)">
-                    <input type="hidden" name="project_external_id" value="${escapeHtml(extId)}" />
-                    <input type="hidden" name="allocation_pct" value="${draft.allocationPct || 100}" />
-                    <input type="hidden" name="project_role" value="${escapeHtml(draft.projectRole || '')}" />
-                    <input type="hidden" name="start_date" value="${escapeHtml(draft.startDate || '')}" />
-                    <input type="hidden" name="end_date" value="${escapeHtml(draft.endDate || '')}" />
-                    <div class="rm-proj-assign-meta rm-proj-assign-meta--defaults">
-                        <div class="rm-proj-assign-fields">
-                            <label>FTE % (each)
-                                <input type="number" min="1" max="100" value="${draft.allocationPct || 100}"
-                                    oninput="App.setAllocDraftPct(this.value); this.closest('form').querySelector('[name=allocation_pct]').value=this.value" />
-                            </label>
-                            <label>Role <span class="rm-field-hint">(leave blank to use each person's designation)</span>
-                                <input type="text" placeholder="e.g. Backend Developer" value="${escapeHtml(draft.projectRole || '')}"
-                                    oninput="this.closest('form').querySelector('[name=project_role]').value=this.value;App.ensureAllocDraft().projectRole=this.value" />
-                            </label>
-                        </div>
-                        <label class="rm-check"><input type="checkbox" name="strict" ${draft.strict ? 'checked' : ''} /> Reject if anyone would exceed 100% FTE</label>
-                    </div>
-                    <div class="rm-alloc-chips" id="rm-alloc-selected-chips">
-                        ${selectedChips || `<span class="rm-hint">Select one or more people below</span>`}
-                    </div>
-                    ${assignTable}
-                    <div class="rm-proj-assign-foot">
-                        <div class="rm-proj-assign-summary">
-                            <span id="rm-alloc-selected-count">${selected.size} people selected</span>
-                            <span id="rm-alloc-total-fte">Total: ${(Math.round((totalSelectedFte / 100) * 10) / 10)} FTE</span>
-                        </div>
-                        <button type="submit" class="rm-proj-btn-primary">Assign</button>
-                    </div>
-                </form>
             </div>
         </div>`;
     }
@@ -2606,12 +2974,18 @@ function renderRmProjectsTab(apiOnline) {
     if (!apiOnline) {
         return `<div class="rm-empty">Start the Resource API to add and manage staffing projects.</div>`;
     }
+    const pageKind = AppState.resourcesManagerProjectPage || 'list';
+    const hasSel = !!(AppState.resourceSelectedProjectId || AppState.resourceSelectedProjectExternalId);
+    if (pageKind === 'create'
+        || (pageKind === 'detail' && (hasSel || AppState.resourceProjectPaneMode === 'edit'))) {
+        return renderRmProjectStaffPage(apiOnline);
+    }
     const q = String(AppState.resourceProjectFilter || '').trim().toLowerCase();
     const listView = AppState.resourceProjectListView || 'active';
     const page = Math.max(1, AppState.resourceProjectPage || 1);
     const pageSize = 50;
     const allocs = AppState.resourceApiAllocations || [];
-    const empMap = Object.fromEntries((AppState.resourceApiEmployees || []).map(e => [e.id, e]));
+    const empMap = Object.fromEntries(asRmList(AppState.resourceApiEmployees).map(e => [e.id, e]));
     const selectedId = AppState.resourceSelectedProjectId;
     const selectedExt = AppState.resourceSelectedProjectExternalId;
 
@@ -2648,7 +3022,7 @@ function renderRmProjectsTab(apiOnline) {
         const isSelected = (p.catalogId && selectedId === p.catalogId) || selectedExt === extId;
         const catArg = p.catalogId ? escapeHtml(p.catalogId) : '';
         const catId = p.catalogId
-            || ((AppState.resourceApiProjects || []).find(x => String(x.external_id) === String(extId)) || {}).id
+            || (asRmList(AppState.resourceApiProjects).find(x => String(x.external_id) === String(extId)) || {}).id
             || '';
         const isOps = getRmActivityType(p) === 'operational';
         return `<tr class="rm-proj-row ${isSelected ? 'rm-proj-row--selected' : ''}"
@@ -2696,38 +3070,51 @@ function renderRmProjectsTab(apiOnline) {
     return `
     <div class="rm-proj-page">
         ${renderRmProjectsKpiRow(kpis)}
-        <div class="rm-proj-workspace">
-            <div class="rm-proj-list card-light">
-                <div class="rm-proj-list-head">
-                    <div class="rm-proj-subtabs">${subTabBar}</div>
-                    <div class="rm-proj-list-toolbar">
-                        <div class="rm-proj-search-wrap">
-                            <span class="ui-inline-icon rm-proj-search-icon">${Icons.search}</span>
-                            <input class="rm-search rm-project-search rm-proj-search-input" type="search" placeholder="Search…"
-                                value="${escapeHtml(AppState.resourceProjectFilter || '')}"
-                                oninput="App.setResourceProjectFilter(this.value)" />
-                        </div>
-                        <button type="button" class="rm-proj-btn-primary" onclick="App.openProjectPaneCreate()">+ New</button>
+        <div class="rm-proj-list card-light">
+            <div class="rm-proj-list-head">
+                <div class="rm-proj-subtabs">${subTabBar}</div>
+                <div class="rm-proj-list-toolbar">
+                    <div class="rm-proj-search-wrap">
+                        <span class="ui-inline-icon rm-proj-search-icon">${Icons.search}</span>
+                        <input class="rm-search rm-project-search rm-proj-search-input" type="search" placeholder="Search…"
+                            value="${escapeHtml(AppState.resourceProjectFilter || '')}"
+                            oninput="App.setResourceProjectFilter(this.value)" />
                     </div>
-                </div>
-                <div class="rm-proj-table-wrap">
-                    <table class="rm-proj-table">
-                        <thead>
-                            <tr>
-                                <th>Name</th><th>Client</th><th>Release</th><th>People</th>
-                                <th>Staffing</th><th>Status</th><th></th>
-                            </tr>
-                        </thead>
-                        <tbody>${rows}</tbody>
-                    </table>
-                </div>
-                <div class="rm-proj-pagination">
-                    <span>Showing ${from} to ${to} of ${projects.length} ${noun}</span>
-                    <div class="rm-proj-page-btns">${pageNums}</div>
+                    <button type="button" class="rm-proj-btn-primary" onclick="App.openProjectPaneCreate()">+ New</button>
                 </div>
             </div>
-            <aside class="rm-proj-pane">${renderRmProjectPane(apiOnline)}</aside>
+            <div class="rm-proj-table-wrap">
+                <table class="rm-proj-table">
+                    <thead>
+                        <tr>
+                            <th>Name</th><th>Client</th><th>Release</th><th>People</th>
+                            <th>Staffing</th><th>Status</th><th></th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>
+            <div class="rm-proj-pagination">
+                <span>Showing ${from} to ${to} of ${projects.length} ${noun}</span>
+                <div class="rm-proj-page-btns">${pageNums}</div>
+            </div>
         </div>
+    </div>`;
+}
+
+function renderRmProjectStaffPage(apiOnline) {
+    const mode = AppState.resourceProjectPaneMode;
+    const pageKind = AppState.resourcesManagerProjectPage;
+    const isCreate = pageKind === 'create' || mode === 'create';
+    const isEdit = mode === 'edit';
+    const title = isCreate ? 'New project' : (isEdit ? 'Edit project' : '');
+    return `
+    <div class="rm-proj-page rm-proj-page--staff">
+        <div class="rm-proj-page-nav">
+            <button type="button" class="rm-proj-back" onclick="App.backToRmProjectsList()">← Projects</button>
+            ${title ? `<h2 class="rm-proj-page-title">${escapeHtml(title)}</h2>` : ''}
+        </div>
+        <div class="rm-proj-page-body">${renderRmProjectPane(apiOnline)}</div>
     </div>`;
 }
 
@@ -2736,10 +3123,10 @@ function renderRmEmployeeDrawer(apiEmps, apiOnline) {
     if (!id || !apiOnline) return '';
     const emp = (apiEmps || []).find(e => e.id === id);
     if (!emp) return '';
-    const allocs = (AppState.resourceApiAllocations || []).filter(a => a.employee_id === id);
+    const allocs = asRmList(AppState.resourceApiAllocations).filter(a => a.employee_id === id);
     const allocRows = allocs.length ? allocs.map(a => {
         const proj = getRmAllocatableProjects().find(p => p.id === a.project_external_id)
-            || (AppState.resourceApiProjects || []).find(p => p.external_id === a.project_external_id)
+            || asRmList(AppState.resourceApiProjects).find(p => p.external_id === a.project_external_id)
             || (AppState.allProjects || []).find(p => p.id === a.project_external_id);
         const name = proj ? (proj.name || proj.external_id) : a.project_external_id;
         return `<div class="rm-list-row">
@@ -2864,12 +3251,7 @@ function renderRmDashboardTab(roster, summary, apiOnline) {
     }).join('') : `<div class="rm-empty">No high-attention projects right now.</div>`;
 
     const availablePeople = apiOnline
-        ? (AppState.resourceApiEmployees || [])
-            .filter(e => isRmProjectStaffable(e)
-                && ((e.utilization_pct || 0) <= 0 || /bench|available/i.test(e.availability_status || ''))
-                && !isRmLeadershipRole(e))
-            .sort((a, b) => (a.full_name || '').localeCompare(b.full_name || ''))
-            .slice(0, 8)
+        ? listRmAvailablePeople(roster, asRmList(AppState.resourceApiEmployees), true).slice(0, 8)
         : roster.filter(e => e.availability === 'Bench' && isRmProjectStaffable(e) && !isRmLeadershipRole(e)).slice(0, 8);
 
     const availableHtml = availablePeople.length ? availablePeople.map(e => {
@@ -3132,10 +3514,10 @@ function renderRmAllocationsTab(roster, apiOnline) {
     const statusF = String(AppState.resourceAllocListStatusFilter || '').trim().toLowerCase();
     const filtersOn = !!(q || projectF || deptF || roleF || statusF);
 
-    if (apiOnline && (AppState.resourceApiAllocations || []).length >= 0) {
+    if (apiOnline && asRmList(AppState.resourceApiAllocations).length >= 0) {
         const allocs = AppState.resourceApiAllocations || [];
-        const empMap = Object.fromEntries((AppState.resourceApiEmployees || []).map(e => [e.id, e]));
-        const catalog = Object.fromEntries((AppState.resourceApiProjects || []).map(p => [p.external_id, p]));
+        const empMap = Object.fromEntries(asRmList(AppState.resourceApiEmployees).map(e => [e.id, e]));
+        const catalog = Object.fromEntries(asRmList(AppState.resourceApiProjects).map(p => [p.external_id, p]));
         const projMap = Object.fromEntries((AppState.allProjects || []).map(p => [p.id, p]));
 
         const enriched = allocs.map(a => {
@@ -3316,11 +3698,7 @@ function isRmLeadershipRole(emp) {
 }
 
 function renderRmBenchTab(roster, apiOnline) {
-    const bench = apiOnline && (AppState.resourceApiEmployees || []).length
-        ? (AppState.resourceApiEmployees || []).filter(e => isRmProjectStaffable(e)
-            && ((e.utilization_pct || 0) <= 0 || /bench|available/i.test(e.availability_status || ''))
-            && !isRmLeadershipRole(e))
-        : roster.filter(e => e.availability === 'Bench' && isRmProjectStaffable(e) && !isRmLeadershipRole(e));
+    const bench = listRmAvailablePeople(roster, asRmList(AppState.resourceApiEmployees), apiOnline);
 
     const recoPack = AppState.resourceBenchRecos;
     const recoByEmp = {};
@@ -3433,7 +3811,7 @@ function renderRmReportsTab(roster, summary, apiOnline) {
 }
 
 function renderResourcesDelivery() {
-    const resMap    = AppState.resourceMap;
+    const resMap    = AppState.resourceDeliveryMap || {};
     const people    = Object.values(resMap).sort((a, b) => b.activeCount - a.activeCount);
     const today     = new Date(); today.setHours(0,0,0,0);
     const WINDOW    = 120; // days to display
@@ -3441,7 +3819,11 @@ function renderResourcesDelivery() {
     const horizonMs = horizon - today;
 
     if (!people.length) {
-        return `<div style="padding:40px;text-align:center;color:var(--text-muted);">No resource data available. Ensure projects have owner, developer and QA fields filled.</div>`;
+        const rosterLoading = AppState.databaseRosterStatus === 'loading';
+        const msg = rosterLoading
+            ? 'Loading people from Database sheet…'
+            : 'No people on the Database sheet yet. Publish the Database tab and refresh.';
+        return `<div style="padding:40px;text-align:center;color:var(--text-muted);">${escapeHtml(msg)}</div>`;
     }
 
     /* ─ helpers ─ */
@@ -3473,7 +3855,7 @@ function renderResourcesDelivery() {
 
     /* ── A. Conflict Alerts ── */
     const CONFLICT_PREVIEW = 2; // show first N pairs; rest behind Shrink / Show more
-    const conflicted = people.filter(p => p.conflicts.length > 0);
+        const conflicted = people.filter(p => (p.conflicts || []).length > 0);
     let conflictHTML = '';
     if (conflicted.length) {
         conflictHTML = `<div class="res-conflict-grid">` + conflicted.map((p, pi) => {
@@ -3704,7 +4086,7 @@ function renderResourcesDelivery() {
 
     let capacityMiniHTML = '';
     if (intelligenceEnabled()) {
-        const cap = AppState.capacityForecast;
+        const cap = AppState.deliveryCapacityForecast;
         const roles = cap.roles || {};
         const intelRoles = typeof getIntelRoles === 'function' ? getIntelRoles() : ['Developer', 'QA', 'BA'];
         capacityMiniHTML = `
@@ -4164,6 +4546,13 @@ function renderAiInsightsShell(mountId, title, subtitle) {
     if (typeof featureOn !== 'function' || !featureOn('AI_INSIGHTS')) return '';
     if (typeof AiInsights === 'undefined') return '';
     return AiInsights.shellHtml(mountId, title, subtitle);
+}
+
+/** PageSpeed Insights panel — homepage of website_url by default. */
+function renderPageSpeedPanel(p) {
+    if (typeof featureOn === 'function' && !featureOn('PAGESPEED_INSIGHTS')) return '';
+    if (typeof PageSpeed === 'undefined') return '';
+    return PageSpeed.shellHtml(p);
 }
 
 /* ══════════════════════════════════════════
@@ -5505,6 +5894,7 @@ function renderProjectPageDevtrack(p, vm) {
                 </button>
                 <span class="streak-pd-crumb">${escapeHtml(p.id)}</span>
                 <div class="streak-pd-toprow-actions">
+                    ${renderVisitWebsiteBtn(p)}
                     <button type="button" class="streak-pd-action-btn" onclick="App.copyProjectLink('${escapeHtml(p.id)}')" title="Copy link to this project">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
                         Copy link
@@ -5523,6 +5913,8 @@ function renderProjectPageDevtrack(p, vm) {
                 <p class="streak-pd-devtrack-sub">${escapeHtml(p.client || '—')} · ${escapeHtml(vm.oneSentence)}</p>
                 <div class="streak-pd-metrics">${metrics}</div>
             </header>
+
+            ${renderPageSpeedPanel(p)}
 
             <div class="streak-pd-devtrack-split">
                 <section class="streak-pd-devtrack-main" aria-labelledby="roadmap-h">
@@ -5582,6 +5974,9 @@ function renderProjectPageClassic(p, vm) {
 
     const scopeRows = [
         ['Site / scope', p.client || '—'],
+        ...(projectWebsiteUrl(p)
+            ? [['Website', websiteHostname(projectWebsiteUrl(p)) || projectWebsiteUrl(p)]]
+            : []),
         ['Start', p.start_date && String(p.start_date).trim() ? formatDate(p.start_date) : '—'],
         [
             'Target go-live',
@@ -5632,6 +6027,7 @@ function renderProjectPageClassic(p, vm) {
             <nav class="streak-pd-topbar streak-pd-topbar--flex" aria-label="Project navigation">
                 <button type="button" class="streak-pd-back" onclick="App.navigate('projects')">← Back to directory</button>
                 <div class="streak-pd-toprow-actions">
+                    ${renderVisitWebsiteBtn(p)}
                     <button type="button" class="streak-pd-action-btn" onclick="App.copyProjectLink('${escapeHtml(p.id)}')" title="Copy link to this project">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
                         Copy link
@@ -5682,6 +6078,8 @@ function renderProjectPageClassic(p, vm) {
                         </div>
                     </div>
                 </div>
+
+                ${renderPageSpeedPanel(p)}
 
                 <section class="streak-pd-panel" aria-labelledby="scope-h">
                     <h2 id="scope-h" class="streak-pd-panel__h">Scope &amp; timeline</h2>
@@ -5773,11 +6171,11 @@ function renderIntelligence() {
         return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
     }
 
-    const sum = AppState.intelligenceSummary || {};
-    const ranked = AppState.attentionRanked.slice(0, 12);
-    const cap = AppState.capacityForecast;
-    const intake = AppState.intakeRecommendation || {};
-    const resMap = AppState.resourceMap;
+    const intel = AppState.deliveryIntelligence || {};
+    const sum = intel.intelligenceSummary || AppState.intelligenceSummary || {};
+    const ranked = (intel.attentionRanked || AppState.attentionRanked).slice(0, 12);
+    const cap = intel.capacityForecast || AppState.capacityForecast;
+    const intake = intel.intakeRecommendation || AppState.intakeRecommendation || {};
     const creatorMode = typeof isContentCreatorWorkspace === 'function' && isContentCreatorWorkspace();
     const primaryRole = typeof getPrimaryWorkRole === 'function' ? getPrimaryWorkRole() : 'Developer';
     const intakeTiers = intake.tiers || {};
@@ -5854,12 +6252,20 @@ function renderIntelligence() {
         </div>`;
     }).join('') : `<div class="intel-empty intel-empty--ok"><span class="ui-inline-icon" aria-hidden="true">${Icons.checkCircle}</span> All active projects are running smoothly. No scored risks.</div>`;
 
-    const releasePeople = (cap.summary?.freeingNext30 || []).slice(0, 10);
-    const releaseHTML = releasePeople.length ? releasePeople.map(p => {
+    const releaseTab = AppState.intelReleaseTab || 'now';
+    const freeNowList = (cap.summary?.freeNow || []);
+    const freeing30List = (cap.summary?.freeingNext30 || []);
+    const releasePeople = releaseTab === '30d' ? freeing30List : freeNowList;
+
+    function renderIntelReleaseRow(p, mode) {
         const init = getInitials(p.name);
         const avc  = stringToColor(p.name);
+        const chipClass = mode === 'now' ? 'res-free-chip--now' : 'res-free-chip--work';
+        const chipLabel = mode === 'now'
+            ? 'Available now'
+            : (p.freeFrom ? `Available ${fmtDate(parseSmartDate(p.freeFrom))}` : 'Available soon');
         return `
-        <div class="intel-release-row" style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;gap:12px;">
+        <div class="intel-release-row">
             <div style="display:flex;align-items:center;gap:10px;min-width:0;flex:1;">
                 <div class="res-tbl-avatar" style="background:${avc};width:30px;height:30px;font-size:10px;font-weight:700;color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;">${init}</div>
                 <div style="min-width:0;">
@@ -5867,11 +6273,25 @@ function renderIntelligence() {
                     <div class="intel-release-roles" style="font-size:11px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml((p.roles || []).join(', '))}</div>
                 </div>
             </div>
-            <div class="res-free-chip res-free-chip--now" style="font-size:11px;font-weight:700;padding:3px 10px;border-radius:99px;white-space:nowrap;">
-                Available ${escapeHtml(p.freeFrom || 'soon')}
+            <div class="res-free-chip ${chipClass}" style="font-size:11px;font-weight:700;padding:3px 10px;border-radius:99px;white-space:nowrap;">
+                ${escapeHtml(chipLabel)}
             </div>
         </div>`;
-    }).join('') : `<div class="intel-empty">Nobody is scheduled to roll off projects in the next 30 days.</div>`;
+    }
+
+    const releaseEmpty = releaseTab === '30d'
+        ? 'Nobody is scheduled to roll off projects in the next 30 days.'
+        : 'No team members are free right now.';
+    const releaseHTML = releasePeople.length
+        ? releasePeople.slice(0, 15).map(p => renderIntelReleaseRow(p, releaseTab)).join('')
+        : `<div class="intel-empty">${releaseEmpty}</div>`;
+
+    const releaseTabs = [
+        ['now', 'Free now', freeNowList.length],
+        ['30d', 'Free in 30 days', freeing30List.length],
+    ].map(([id, lbl, count]) => `
+        <button type="button" class="tl-tab ${releaseTab === id ? 'tl-tab--active' : ''}"
+            onclick="App.setIntelReleaseTab('${id}')">${escapeHtml(lbl)} <span class="intel-release-tab-count">${count}</span></button>`).join('');
 
     const roles = cap.roles || {};
     const intelRoles = typeof getIntelRoles === 'function' ? getIntelRoles() : ['Developer', 'QA', 'BA', 'Owner', 'Page owner'];
@@ -5977,12 +6397,15 @@ function renderIntelligence() {
 
             <!-- Resource release card -->
             <div class="intel-section card-light" style="border-radius:18px;padding:20px;">
-                <div class="intel-section-head" style="margin-bottom:16px;border-bottom:1px solid var(--border-light);padding-bottom:10px;">
-                    <h2 class="intel-section-title" style="font-size:16px;font-weight:800;color:var(--text-primary);">${sectionTitleWithIcon(Icons.users, 'Team Rolling Off Soon (30d)')}</h2>
+                <div class="intel-section-head" style="margin-bottom:12px;border-bottom:1px solid var(--border-light);padding-bottom:10px;">
+                    <h2 class="intel-section-title" style="font-size:16px;font-weight:800;color:var(--text-primary);">${sectionTitleWithIcon(Icons.users, 'Team Availability')}</h2>
                     <span class="intel-section-sub" style="font-size:12px;line-height:1.4;color:var(--text-muted);margin-top:4px;display:block;">
-                        These team members are finishing their current project commitments in the next 30 days and will be ready for new assignments.
+                        ${releaseTab === '30d'
+                            ? 'Team members finishing active Delivery work within the next 30 days (by sibling release date).'
+                            : 'Team members with no active Delivery assignments today (Database roster · Match By Person).'}
                     </span>
                 </div>
+                <div class="tl-view-tabs intel-release-tabs" style="margin-bottom:14px;">${releaseTabs}</div>
                 <div class="intel-release-list">${releaseHTML}</div>
             </div>
         </div>
