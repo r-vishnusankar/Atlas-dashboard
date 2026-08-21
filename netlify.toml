@@ -15,6 +15,15 @@
   status = 200
   force = true
 
+[[redirects]]
+  from = "/api/psi"
+  to = "/.netlify/functions/pagespeed"
+  status = 200
+  force = true
+
+[functions.pagespeed]
+  timeout = 26
+
 # Resource tracker (Render). Browser on Netlify talks to Render directly;
 # this rewrite is a same-origin fallback if JS still uses /api/resource.
 [[redirects]]

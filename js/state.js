@@ -218,6 +218,7 @@ const AppState = {
                 p.client.toLowerCase().includes(q) ||
                 p.owner.toLowerCase().includes(q)  ||
                 p.id.toLowerCase().includes(q)     ||
+                (p.website_url || '').toLowerCase().includes(q) ||
                 (p.tags || []).some(t => t.toLowerCase().includes(q))
             );
         }

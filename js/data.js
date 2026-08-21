@@ -60,6 +60,8 @@ function headerCellToField(key) {
         current_page:      ['current_page', 'current page'],
         detail_gid:        ['detail_gid', 'sibling_gid', 'tab_gid', 'project_tab_gid'],
         detail_csv_url:    ['detail_csv_url', 'sibling_csv_url', 'project_sibling_url'],
+        website_url:       ['website_url', 'website', 'live_url', 'site_url', 'project_url', 'live_site'],
+        preview_image:     ['preview_image', 'preview', 'thumbnail', 'thumb', 'og_image', 'site_image'],
     };
     for (const [field, list] of Object.entries(aliases)) {
         if (list.includes(key)) return field;
@@ -163,6 +165,8 @@ function parseCSV(csvText) {
             current_page:   c('current_page') || '',
             detail_gid:     (c('detail_gid') || '').trim(),
             detail_csv_url: (c('detail_csv_url') || '').trim(),
+            website_url:    normalizeWebsiteUrl(c('website_url')),
+            preview_image:  normalizePreviewImageUrl(c('preview_image')),
             tags:         (c('tags') || '').split(',').map(t => t.trim()).filter(Boolean),
             notes:        c('notes') || '',
         };
@@ -198,6 +202,59 @@ function parseCSVLine(line) {
     }
     result.push(current.replace(/"/g,''));
     return result;
+}
+
+/**
+ * Allow only http(s) site URLs from the Project tab. Adds https:// when missing.
+ */
+function normalizeWebsiteUrl(raw) {
+    const t = String(raw || '').trim();
+    if (!t || isPlaceholderDate(t)) return '';
+    let candidate = t;
+    if (!/^https?:\/\//i.test(candidate)) candidate = 'https://' + candidate;
+    try {
+        const u = new URL(candidate);
+        if (u.protocol !== 'http:' && u.protocol !== 'https:') return '';
+        if (!u.hostname || u.hostname === 'localhost') return '';
+        return u.href;
+    } catch (_) {
+        return '';
+    }
+}
+
+function websiteHostname(url) {
+    try {
+        return new URL(url).hostname.replace(/^www\./i, '');
+    } catch (_) {
+        return '';
+    }
+}
+
+function websitePreviewSrc(url) {
+    const clean = normalizeWebsiteUrl(url);
+    if (!clean) return '';
+    return `https://s.wordpress.com/mshots/v1/${encodeURIComponent(clean)}?w=800`;
+}
+
+/** Manual thumbnail from sheet (http(s) or Google Drive file link). */
+function normalizePreviewImageUrl(raw) {
+    const t = String(raw || '').trim();
+    if (!t || isPlaceholderDate(t)) return '';
+    const drive = t.match(/drive\.google\.com\/file\/d\/([^/?]+)/i);
+    if (drive) return `https://drive.google.com/thumbnail?id=${encodeURIComponent(drive[1])}&sz=w800`;
+    const driveOpen = t.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+    if (/drive\.google\.com/i.test(t) && driveOpen) {
+        return `https://drive.google.com/thumbnail?id=${encodeURIComponent(driveOpen[1])}&sz=w800`;
+    }
+    if (/^https?:\/\//i.test(t)) return t;
+    return '';
+}
+
+/** Card thumbnail: preview_image if set, else auto-screenshot of website_url. */
+function projectThumbSrc(project) {
+    const preview = normalizePreviewImageUrl(project?.preview_image);
+    if (preview) return preview;
+    return websitePreviewSrc(project?.website_url);
 }
 
 function normalizePagePriority(s) {
@@ -1248,6 +1305,8 @@ function mapClickUpTaskToProject(task, ws) {
     let notes = task.description || '';
     let tags = (task.tags || []).map(t => t.name || t);
     let customHealth = '';
+    let website_url = '';
+    let preview_image = '';
 
     if (creatorMode) {
         // All ClickUp assignees are Content Creators — store joined names in developer
@@ -1290,6 +1349,10 @@ function mapClickUpTaskToProject(task, ws) {
                 actual_live_date = String(val);
             } else if (fname === 'status' || fname === 'health') {
                 customHealth = String(val);
+            } else if (fname === 'website' || fname === 'websiteurl' || fname === 'liveurl' || fname === 'siteurl' || fname === 'projecturl') {
+                website_url = String(val);
+            } else if (fname === 'previewimage' || fname === 'preview' || fname === 'thumbnail' || fname === 'ogimage') {
+                preview_image = String(val);
             }
         });
     }
@@ -1340,6 +1403,8 @@ function mapClickUpTaskToProject(task, ws) {
         current_page: '',
         detail_gid: '',
         detail_csv_url: '',
+        website_url: normalizeWebsiteUrl(website_url),
+        preview_image: normalizePreviewImageUrl(preview_image),
         notes,
         tags,
         hasManualProgress: true,
@@ -4213,7 +4278,7 @@ function exportToCSV(projects) {
         'project_id','project_name','owner','page_name','page_owner',
         'stage','status','BA','progress','start_date','release_date',
         'priority','CMS','tags','notes','developer','qa_engineer',
-        'total_pages','completed_pages','page_priority','actual_live_date'
+        'total_pages','completed_pages','page_priority','actual_live_date','website_url','preview_image'
     ];
     
     const rows = projects.map(p => [
@@ -4221,7 +4286,7 @@ function exportToCSV(projects) {
         p.stage, p.status, p.ba, p.progress, p.start_date, p.release_date,
         p.priority, p.cms, (p.tags||[]).join('; '), p.notes,
         p.developer, p.qa_engineer, p.total_pages, p.completed_pages,
-        p.page_priority, p.actual_live_date
+        p.page_priority, p.actual_live_date, p.website_url || '', p.preview_image || ''
     ]);
 
     const csvContent = [headers, ...rows]

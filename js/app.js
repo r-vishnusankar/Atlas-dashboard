@@ -1862,6 +1862,10 @@ const App = {
             requestAnimationFrame(() => AiInsights.mountProject(wantId, this._aiMountOpts()));
         }
 
+        if (typeof PageSpeed !== 'undefined' && typeof featureOn === 'function' && featureOn('PAGESPEED_INSIGHTS')) {
+            requestAnimationFrame(() => PageSpeed.mount(wantId, { soft: true }));
+        }
+
         if (scrollEl) scrollEl.scrollTop = scrollTop;
         this._softRender = false;
     },
@@ -1991,6 +1995,9 @@ const App = {
                                 ));
                             }
                             requestAnimationFrame(() => AiInsights.mountProject(wantId, aiOpts));
+                        }
+                        if (typeof PageSpeed !== 'undefined' && typeof featureOn === 'function' && featureOn('PAGESPEED_INSIGHTS')) {
+                            requestAnimationFrame(() => PageSpeed.mount(wantId, aiOpts));
                         }
                     }
                 })();
@@ -2442,13 +2449,16 @@ const App = {
         try {
             const { projects, source, roadmapCount } = await this._loadLiveProjects();
 
-            if (silent && AppState.currentView === 'project') {
-                await this._silentRefreshProjectPage();
-            } else {
-                this._softRender = !!silent;
-                this.renderCurrentView({ soft: silent });
-                this._softRender = false;
-                this._restoreScrollPosition(scrollEl, scrollTop);
+            const repaintSilent = typeof featureOn === 'function' && featureOn('SILENT_REFRESH_REPAINT');
+            if (!silent || repaintSilent) {
+                if (silent && AppState.currentView === 'project') {
+                    await this._silentRefreshProjectPage();
+                } else {
+                    this._softRender = !!silent;
+                    this.renderCurrentView({ soft: silent });
+                    this._softRender = false;
+                    this._restoreScrollPosition(scrollEl, scrollTop);
+                }
             }
 
             this.updateSidebarMeta();

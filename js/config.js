@@ -12,6 +12,8 @@
  * Sheet must have headers matching COLUMN_MAP (or the header aliases in data.js).
  * Optional on the **Project** tab: **detail_gid** (tab id for a sibling detail sheet) or
  * **detail_csv_url** (full published CSV URL to that tab; overrides detail_gid when set).
+ * Optional: **website_url** (live site) — Visit website + PageSpeed Insights (homepage by default).
+ * Optional: **preview_image** (image URL) — directory thumbnail; if empty, auto-screenshot from website_url.
  * ─────────────────────────────────────────────────────────
  */
 
@@ -212,6 +214,8 @@ const CONFIG = {
         completed_pages: 18, // S
         page_priority: 19, // T
         actual_live_date: 20, // U
+        website_url:      21, // V (optional; header aliases also match website / live_url)
+        preview_image:    22, // W (optional; manual thumbnail URL; else auto-screenshot)
     },
 
     // ── UI Preferences ──────────────────────────────────
@@ -288,6 +292,12 @@ const CONFIG = {
         CLICKUP_SUBTASK_ENRICH: true,
         /** Resource map from sibling tab rows (per-page Developer/QA/Page owner); master row fallback. */
         SIBLING_RESOURCE_MAP: true,
+        /** Directory thumbnails + Visit website from Project tab website_url. */
+        PROJECT_WEBSITE_PREVIEW: true,
+        /** PageSpeed Insights on the project page (homepage of website_url by default). */
+        PAGESPEED_INSIGHTS: true,
+        /** Auto/tab silent refresh repaints the current view. Off = fetch data only (no DOM swap / flicker). Manual Refresh always repaints. */
+        SILENT_REFRESH_REPAINT: false,
 
         // ── Audit fixes (2026-06-16) — set to false to revert individually ──
         /** Bug #1/#10: Only count sibling/subtask rows that have a non-blank progress value in avgPct.
@@ -347,6 +357,19 @@ const CONFIG = {
     AI: {
         API_BASE: '/api/ai',
         CACHE_TTL_MS: 900000,
+    },
+
+    /**
+     * Google PageSpeed Insights — project page, homepage of website_url by default.
+     * Local: same-origin proxy via serve.py → /api/psi
+     * Optional PAGESPEED_API_KEY in .env raises Google quota; works without a key too.
+     */
+    PSI: {
+        API_BASE: '/api/psi',
+        GOOGLE_ENDPOINT: 'https://www.googleapis.com/pagespeedonline/v5/runPagespeed',
+        CACHE_TTL_MS: 3600000,
+        TIMEOUT_MS: 90000,
+        DEFAULT_STRATEGY: 'mobile',
     },
 
     /**
@@ -425,6 +448,7 @@ Object.freeze(CONFIG.COLUMN_MAP);
 Object.freeze(CONFIG.ROLES);
 Object.freeze(CONFIG.FEATURE_FLAGS);
 Object.freeze(CONFIG.AI);
+Object.freeze(CONFIG.PSI);
 Object.freeze(CONFIG.ATTENTION_WEIGHTS);
 Object.freeze(CONFIG.CAPACITY);
 Object.freeze(CONFIG.INTAKE);

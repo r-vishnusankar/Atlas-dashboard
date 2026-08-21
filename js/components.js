@@ -1092,6 +1092,45 @@ function initCalendar() {
 /* ══════════════════════════════════════════
    VIEW: DIRECTORY (Projects)
 ══════════════════════════════════════════ */
+function projectWebsiteUrl(p) {
+    if (typeof featureOn === 'function' && !featureOn('PROJECT_WEBSITE_PREVIEW')) return '';
+    return typeof normalizeWebsiteUrl === 'function'
+        ? normalizeWebsiteUrl(p?.website_url)
+        : String(p?.website_url || '').trim();
+}
+
+function renderVisitWebsiteBtn(p) {
+    const url = projectWebsiteUrl(p);
+    if (!url) return '';
+    const host = typeof websiteHostname === 'function' ? websiteHostname(url) : '';
+    return `<a class="streak-pd-action-btn streak-pd-action-btn--site" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" title="Open ${escapeHtml(host || url)}">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+        Visit website
+    </a>`;
+}
+
+function renderDirectorySiteThumb(p) {
+    if (typeof featureOn === 'function' && !featureOn('PROJECT_WEBSITE_PREVIEW')) return '';
+    const url = projectWebsiteUrl(p);
+    const src = typeof projectThumbSrc === 'function' ? projectThumbSrc(p) : '';
+    if (!src && !url) return '';
+    const host = url && typeof websiteHostname === 'function' ? websiteHostname(url) : '';
+    const shotFallback = (p.preview_image && url && typeof websitePreviewSrc === 'function')
+        ? websitePreviewSrc(url)
+        : '';
+    const onErr = shotFallback
+        ? `if(this.dataset.fallback){const n=this.dataset.fallback; delete this.dataset.fallback; this.src=n;}else{this.style.display='none'; this.parentElement.classList.add('is-fallback');}`
+        : `this.style.display='none'; this.parentElement.classList.add('is-fallback');`;
+    return `
+        <div class="directory-card__thumb">
+            ${src ? `<img src="${escapeHtml(src)}" alt="" loading="lazy" decoding="async"${shotFallback ? ` data-fallback="${escapeHtml(shotFallback)}"` : ''}
+                onerror="${onErr}">` : ''}
+            <div class="directory-card__thumb-fallback">${escapeHtml(host || p.name || 'Website')}</div>
+            ${url ? `<a class="directory-card__visit" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer"
+               onclick="event.stopPropagation();" title="Open ${escapeHtml(host || url)}">Visit ↗</a>` : ''}
+        </div>`;
+}
+
 function renderProjects(projects) {
     let html = `
     <div class="directory-header">
@@ -1136,8 +1175,10 @@ function renderProjects(projects) {
         }
 
         const dispProg = projectDisplayProgress(p);
+        const siteThumb = renderDirectorySiteThumb(p);
         html += `
-        <div class="directory-card card-light" onclick="App.handleCardClick('${p.id}')">
+        <div class="directory-card card-light${siteThumb ? ' directory-card--has-site' : ''}" onclick="App.handleCardClick('${p.id}')">
+            ${siteThumb}
             <div class="directory-card__badges">
                  <div class="directory-pill directory-pill--stage">${projectFunnelStage(p)}</div>
                  <div class="${statusPill}">${stLabel}</div>
@@ -1195,6 +1236,7 @@ function renderPipeline(projects) {
         let cards = pjs.map(p => {
             const statusColor = getStatusPastel(p.status).replace('bg-', '');
             const dispProg = projectDisplayProgress(p);
+            const siteUrl = projectWebsiteUrl(p);
             
             return `
             <div class="kanban-card" onclick="App.handleCardClick('${p.id}')">
@@ -1203,6 +1245,7 @@ function renderPipeline(projects) {
                     <div style="width:8px; height:8px; border-radius:50%; background:var(--bg-${statusColor})"></div>
                 </div>
                 <div style="font-size:14px; font-weight:var(--fw-heavy); margin-bottom:12px;">${p.name}</div>
+                ${siteUrl ? `<a class="kanban-site-link" href="${escapeHtml(siteUrl)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation();">Visit site ↗</a>` : ''}
                 ${p.total_pages > 0 ? `<div style="font-size:10px; font-weight:bold; color:var(--text-muted); margin-bottom:12px;">Pages: ${p.completed_pages}/${p.total_pages} (${p.page_priority})</div>` : ''}
                 <div style="display:flex; justify-content:space-between; align-items:center">
                     <span style="font-size:12px; font-weight:var(--fw-bold); display:flex; align-items:center; gap:4px">
@@ -4505,6 +4548,13 @@ function renderAiInsightsShell(mountId, title, subtitle) {
     return AiInsights.shellHtml(mountId, title, subtitle);
 }
 
+/** PageSpeed Insights panel — homepage of website_url by default. */
+function renderPageSpeedPanel(p) {
+    if (typeof featureOn === 'function' && !featureOn('PAGESPEED_INSIGHTS')) return '';
+    if (typeof PageSpeed === 'undefined') return '';
+    return PageSpeed.shellHtml(p);
+}
+
 /* ══════════════════════════════════════════
    VIEW: ANALYTICS (full redesign)
 ══════════════════════════════════════════ */
@@ -5844,6 +5894,7 @@ function renderProjectPageDevtrack(p, vm) {
                 </button>
                 <span class="streak-pd-crumb">${escapeHtml(p.id)}</span>
                 <div class="streak-pd-toprow-actions">
+                    ${renderVisitWebsiteBtn(p)}
                     <button type="button" class="streak-pd-action-btn" onclick="App.copyProjectLink('${escapeHtml(p.id)}')" title="Copy link to this project">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
                         Copy link
@@ -5862,6 +5913,8 @@ function renderProjectPageDevtrack(p, vm) {
                 <p class="streak-pd-devtrack-sub">${escapeHtml(p.client || '—')} · ${escapeHtml(vm.oneSentence)}</p>
                 <div class="streak-pd-metrics">${metrics}</div>
             </header>
+
+            ${renderPageSpeedPanel(p)}
 
             <div class="streak-pd-devtrack-split">
                 <section class="streak-pd-devtrack-main" aria-labelledby="roadmap-h">
@@ -5921,6 +5974,9 @@ function renderProjectPageClassic(p, vm) {
 
     const scopeRows = [
         ['Site / scope', p.client || '—'],
+        ...(projectWebsiteUrl(p)
+            ? [['Website', websiteHostname(projectWebsiteUrl(p)) || projectWebsiteUrl(p)]]
+            : []),
         ['Start', p.start_date && String(p.start_date).trim() ? formatDate(p.start_date) : '—'],
         [
             'Target go-live',
@@ -5971,6 +6027,7 @@ function renderProjectPageClassic(p, vm) {
             <nav class="streak-pd-topbar streak-pd-topbar--flex" aria-label="Project navigation">
                 <button type="button" class="streak-pd-back" onclick="App.navigate('projects')">← Back to directory</button>
                 <div class="streak-pd-toprow-actions">
+                    ${renderVisitWebsiteBtn(p)}
                     <button type="button" class="streak-pd-action-btn" onclick="App.copyProjectLink('${escapeHtml(p.id)}')" title="Copy link to this project">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
                         Copy link
@@ -6021,6 +6078,8 @@ function renderProjectPageClassic(p, vm) {
                         </div>
                     </div>
                 </div>
+
+                ${renderPageSpeedPanel(p)}
 
                 <section class="streak-pd-panel" aria-labelledby="scope-h">
                     <h2 id="scope-h" class="streak-pd-panel__h">Scope &amp; timeline</h2>
