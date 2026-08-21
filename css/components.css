@@ -2492,17 +2492,32 @@
   margin-top: 16px;
 }
 
-/* Projects tab: workspace fills the panel via flex instead of the hardcoded
-   min(860px, ...) height — eliminates the outer panel scroll on this tab.
-   The inner .rm-proj-detail keeps its own overflow-y: auto for the right pane. */
-.res-page--manager .rm-proj-page {
+/* Projects tab: workspace fills the panel via flex — table body scrolls inside the list card. */
+.res-page--manager .rm-manager-head,
+.res-page--manager .rm-tabs {
+  flex-shrink: 0;
+}
+.res-page--manager .rm-panel:has(> .rm-proj-page:not(.rm-proj-page--staff)) {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-bottom: 0;
+}
+.res-page--manager .rm-proj-page:not(.rm-proj-page--staff) {
+  display: flex;
+  flex-direction: column;
   flex: 1;
   min-height: 0;
+  gap: 16px;
+}
+.res-page--manager .rm-proj-page:not(.rm-proj-page--staff) .rm-proj-kpi-row {
+  flex-shrink: 0;
 }
 .res-page--manager .rm-proj-page:not(.rm-proj-page--staff) .rm-proj-list {
+  flex: 1;
+  min-height: 0;
   height: auto;
   max-height: none;
-  min-height: 420px;
 }
 .res-mode-switch {
   display: inline-flex;
