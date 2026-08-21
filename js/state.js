@@ -95,8 +95,12 @@ const AppState = {
     resourceSelectedProjectId: null,   // catalog row id (UUID)
     resourceSelectedProjectExternalId: null, // sheet external id when not yet in API
     resourceProjectPaneMode: 'empty', // empty | create | edit | detail
+    /** Projects tab full pages: list | detail | create (explicit; do not derive from selection). */
+    resourcesManagerProjectPage: 'list',
     resourceProjectForm: null,        // { id, externalId, name, client, releaseDate }
     resourceAllocDraft: null,         // { selectedEmployeeIds, allocationPct, projectRole, startDate, endDate, strict }
+    resourceAllocDrawerOpen: false,
+    resourceAllocShowAll: false,
     resourceProjectFilter: '',
     resourceProjectListView: 'active', // active | operational | recent | archived
     resourceProjectPage: 1,
@@ -454,6 +458,11 @@ const AppState = {
         const ok = ['dashboard', 'employees', 'projects', 'allocations', 'bench', 'reports'];
         this.resourcesManagerTab = ok.includes(tab) ? tab : 'dashboard';
         localStorage.setItem('atlas_resources_manager_tab', this.resourcesManagerTab);
+    },
+
+    setResourcesManagerProjectPage(page) {
+        const ok = ['list', 'detail', 'create'];
+        this.resourcesManagerProjectPage = ok.includes(page) ? page : 'list';
     },
 
     setAllocationView(view) {
